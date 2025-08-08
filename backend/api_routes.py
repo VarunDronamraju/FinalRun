@@ -16,6 +16,7 @@ from utils import (
 )
 from documents import document_processor
 from schemas import EmbeddingResponse, DocumentChunkWithEmbedding
+from rag import vector_store, rag_pipeline
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -304,3 +305,114 @@ async def generate_embeddings(doc_id: str):
     except Exception as e:
         logger.error(f"Embedding generation error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Embedding generation failed")
+
+
+@router.post("/documents/{doc_id}/store", response_model=BaseResponse)
+async def store_document_vectors(doc_id: str):
+    """Store document embeddings in vector database"""
+    if doc_id not in documents_store:
+        raise HTTPException(status_code=404, detail="Document not found")
+    
+    try:
+        doc_data = documents_store[doc_id]
+        chunks = doc_data.get("chunks", [])
+        
+        if not chunks:
+            raise HTTPException(status_code=400, detail="No chunks found")
+        
+        # Check if embeddings exist
+        if not chunks[0].get("embedding"):
+            raise HTTPException(status_code=400, detail="No embeddings found. Generate embeddings first")
+        
+        # Store in Qdrant
+        stored_count = vector_store.store_embeddings(doc_id, chunks)
+        
+        # Update document status
+        doc_data["document"].processing_status = "stored"
+        
+        logger.info(f"Vectors stored for document: {doc_id}")
+        
+        return BaseResponse(message=f"Stored {stored_count} vectors successfully")
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Vector storage error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Vector storage failed")
+
+@router.post("/search/semantic")
+async def semantic_search(request: dict):
+    """Semantic search across documents"""
+    try:
+        query = request.get("query")
+        limit = request.get("limit", 5)
+        document_id = request.get("document_id")
+        
+        if not query:
+            raise HTTPException(status_code=400, detail="Query is required")
+        
+        # Generate query embedding - Fix the import
+        from embedding import embedding_engine
+        query_embedding = embedding_engine.embed_single_text(query)
+        
+        # Search vectors
+        results = vector_store.search_similar(
+            query_vector=query_embedding,
+            limit=limit,
+            doc_filter=document_id
+        )
+        
+        # Format results
+        search_results = []
+        for result in results:
+            search_results.append({
+                "chunk_id": result.id,
+                "score": result.score,
+                "text": result.payload.get("text", ""),
+                "document_id": result.payload.get("document_id", ""),
+                "chunk_index": result.payload.get("chunk_index", 0)
+            })
+        
+        return {
+            "query": query,
+            "results": search_results,
+            "total_found": len(search_results)
+        }
+        
+    except Exception as e:
+        logger.error(f"Semantic search error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Semantic search failed")
+
+# Add import
+
+@router.post("/rag/query")
+async def rag_query(request: dict):
+    """RAG query endpoint"""
+    try:
+        query = request.get("query")
+        max_results = request.get("max_results", 5)
+        max_context_length = request.get("max_context_length", 2000)
+        
+        if not query:
+            raise HTTPException(status_code=400, detail="Query is required")
+        
+        # Retrieve context
+        context = rag_pipeline.retrieve_context(
+            query=query,
+            max_results=max_results,
+            max_context_length=max_context_length
+        )
+        
+        # Build prompt
+        prompt = rag_pipeline.build_rag_prompt(query, context)
+        
+        return {
+            "query": query,
+            "context": context,
+            "prompt": prompt,
+            "status": "context_retrieved"
+        }
+        
+    except Exception as e:
+        logger.error(f"RAG query error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="RAG query failed")

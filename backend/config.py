@@ -7,8 +7,10 @@ class Settings(BaseSettings):
     database_url: str = "postgresql://postgres:qwerty12345@localhost:5433/ragbot"
     
     # Qdrant settings
-    qdrant_url: str = "http://localhost:6333"
-    qdrant_api_key: Optional[str] = None
+    embedding_model: str = "all-MiniLM-L6-v2"
+    embedding_batch_size: int = 32
+    embedding_cache_dir: str = "./models"
+
     
     # OAuth settings
     google_client_id: str = ""
@@ -41,9 +43,11 @@ class Settings(BaseSettings):
     disable_s3: bool = False
 
     # Embedding model settings
-    embedding_model: str = "all-MiniLM-L6-v2"
-    embedding_batch_size: int = 32
-    embedding_cache_dir: str = "./models"
+
+     # Qdrant settings  
+    qdrant_url: str = "http://localhost:6333"
+    qdrant_api_key: Optional[str] = None
+    qdrant_collection_name: str = "documents"
     
     class Config:
         env_file = ".env"
