@@ -48,6 +48,16 @@ class Settings(BaseSettings):
     qdrant_url: str = "http://localhost:6333"
     qdrant_api_key: Optional[str] = None
     qdrant_collection_name: str = "documents"
+
+    ollama_url: str = "http://localhost:11434"
+    ollama_model: str = "gemma:2b"
+    ollama_timeout: int = 60
+
+    # RAG settings
+    rag_max_results: int = 10
+    rag_max_context_length: int = 10000
+
+    # LLM settings  
     
     class Config:
         env_file = ".env"

@@ -3,7 +3,8 @@ from fastapi.responses import JSONResponse
 from typing import List, Optional
 import logging
 from datetime import datetime
-
+from fastapi.responses import StreamingResponse
+import asyncio
 from config import settings    
 from schemas import (
     DocumentResponse, DocumentListResponse, HealthResponse,
@@ -17,6 +18,7 @@ from utils import (
 from documents import document_processor
 from schemas import EmbeddingResponse, DocumentChunkWithEmbedding
 from rag import vector_store, rag_pipeline
+from llm import ollama_client
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -416,3 +418,92 @@ async def rag_query(request: dict):
     except Exception as e:
         logger.error(f"RAG query error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="RAG query failed")
+
+
+
+
+@router.post("/llm/generate")
+async def generate_llm_response(request: dict):
+    """Generate LLM response"""
+    try:
+        prompt = request.get("prompt")
+        if not prompt:
+            raise HTTPException(status_code=400, detail="Prompt is required")
+        
+        # Check if Ollama is available
+        if not await ollama_client.is_available():
+            raise HTTPException(status_code=503, detail="Ollama service unavailable")
+        
+        response = await ollama_client.generate_response(prompt)
+        
+        return {
+            "prompt": prompt,
+            "response": response,
+            "model": settings.ollama_model
+        }
+        
+    except Exception as e:
+        logger.error(f"LLM generation error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="LLM generation failed")
+
+@router.post("/rag/answer")
+async def rag_answer(request: dict):
+    """Complete RAG pipeline with answer generation"""
+    try:
+        query = request.get("query")
+        max_results = request.get("max_results", 5)
+        
+        if not query:
+            raise HTTPException(status_code=400, detail="Query is required")
+        
+        # Check if Ollama is available
+        if not await ollama_client.is_available():
+            raise HTTPException(status_code=503, detail="Ollama service unavailable")
+        
+        result = await rag_pipeline.generate_answer(query, max_results)
+        return result
+        
+    except Exception as e:
+        logger.error(f"RAG answer error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="RAG answer failed")
+
+@router.post("/rag/stream")
+async def rag_stream_answer(request: dict):
+    """Stream RAG answer"""
+    try:
+        query = request.get("query")
+        max_results = request.get("max_results", 5)
+        
+        if not query:
+            raise HTTPException(status_code=400, detail="Query is required")
+        
+        # Check if Ollama is available
+        if not await ollama_client.is_available():
+            raise HTTPException(status_code=503, detail="Ollama service unavailable")
+        
+        async def generate():
+            async for chunk in rag_pipeline.stream_answer(query, max_results):
+                yield f"data: {chunk}\n\n"
+            yield "data: [DONE]\n\n"
+        
+        return StreamingResponse(
+            generate(),
+            media_type="text/plain",
+            headers={"Cache-Control": "no-cache", "Connection": "keep-alive"}
+        )
+        
+    except Exception as e:
+        logger.error(f"RAG streaming error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="RAG streaming failed")
+
+@router.get("/llm/status")
+async def llm_status():
+    """Check LLM service status"""
+    ollama_available = await ollama_client.is_available()
+    
+    return {
+        "ollama_available": ollama_available,
+        "ollama_url": settings.ollama_url,
+        "model": settings.ollama_model,
+        "status": "ready" if ollama_available else "unavailable"
+    }

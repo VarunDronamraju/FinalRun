@@ -5,6 +5,7 @@ from qdrant_client.models import Distance, VectorParams, PointStruct, Filter, Fi
 import uuid
 
 from config import settings
+from llm import ollama_client
 
 logger = logging.getLogger(__name__)
 
@@ -101,6 +102,8 @@ class VectorStore:
 # Global vector store
 vector_store = VectorStore()
 
+
+
 class RAGPipeline:
     def __init__(self, vector_store: VectorStore):
         self.vector_store = vector_store
@@ -141,6 +144,51 @@ Question: {query}
 Please answer the question based on the provided context. If the context doesn't contain enough information to answer the question, say so clearly.
 
 Answer:"""
+    
+    async def generate_answer(self, query: str, max_results: int = 5) -> Dict[str, Any]:
+        """Complete RAG pipeline with LLM generation"""
+        try:
+            # Retrieve context
+            context = self.retrieve_context(query, max_results)
+            
+            # Build prompt
+            prompt = self.build_rag_prompt(query, context)
+            
+            # Generate answer
+            answer = await ollama_client.generate_response(prompt)
+            
+            return {
+                "query": query,
+                "context": context,
+                "answer": answer,
+                "status": "completed"
+            }
+            
+        except Exception as e:
+            logger.error(f"RAG generation failed: {e}")
+            return {
+                "query": query,
+                "context": "",
+                "answer": f"Error: {str(e)}",
+                "status": "error"
+            }
+    
+    async def stream_answer(self, query: str, max_results: int = 5):
+        """Stream RAG answer"""
+        try:
+            # Retrieve context
+            context = self.retrieve_context(query, max_results)
+            
+            # Build prompt
+            prompt = self.build_rag_prompt(query, context)
+            
+            # Stream answer
+            async for chunk in ollama_client.stream_response(prompt):
+                yield chunk
+                
+        except Exception as e:
+            logger.error(f"RAG streaming failed: {e}")
+            yield f"Error: {str(e)}"
 
-# Global RAG pipeline
+# Update global pipeline
 rag_pipeline = RAGPipeline(vector_store)
