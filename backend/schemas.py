@@ -2,6 +2,7 @@ from pydantic import BaseModel
 from typing import List, Optional, Dict, Any
 from datetime import datetime
 
+
 class BaseResponse(BaseModel):
     success: bool = True
     message: str = "Success"
@@ -52,3 +53,17 @@ class ErrorResponse(BaseModel):
     success: bool = False
     error: str
     detail: Optional[str] = None
+
+class DocumentChunkWithEmbedding(BaseModel):
+    id: str
+    index: int
+    text: str
+    length: int
+    embedding_dim: Optional[int] = None
+    created_at: datetime
+
+class EmbeddingResponse(BaseModel):
+    document_id: str
+    chunks_processed: int
+    embedding_dimension: int
+    status: str

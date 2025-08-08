@@ -39,6 +39,11 @@ class Settings(BaseSettings):
     s3_bucket_name: str = "ragbot-conversations"
     s3_region: str = "us-east-1"
     disable_s3: bool = False
+
+    # Embedding model settings
+    embedding_model: str = "all-MiniLM-L6-v2"
+    embedding_batch_size: int = 32
+    embedding_cache_dir: str = "./models"
     
     class Config:
         env_file = ".env"

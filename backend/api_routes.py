@@ -15,6 +15,7 @@ from utils import (
     generate_file_id, validate_chunk_quality
 )
 from documents import document_processor
+from schemas import EmbeddingResponse, DocumentChunkWithEmbedding
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -264,3 +265,42 @@ async def get_available_models():
         "llm_model": settings.ollama_model,
         "status": "not_loaded"
     }
+
+@router.post("/documents/{doc_id}/embeddings", response_model=EmbeddingResponse)
+async def generate_embeddings(doc_id: str):
+    """Generate embeddings for document chunks"""
+    if doc_id not in documents_store:
+        raise HTTPException(status_code=404, detail="Document not found")
+    
+    try:
+        doc_data = documents_store[doc_id]
+        chunks = doc_data.get("chunks", [])
+        
+        if not chunks:
+            raise HTTPException(status_code=400, detail="Document not chunked yet")
+        
+        # Generate embeddings
+        chunks_with_embeddings = document_processor.process_document_with_embeddings(doc_id, chunks)
+        
+        # Update storage
+        doc_data["chunks"] = chunks_with_embeddings
+        doc_data["document"].processing_status = "embedded"
+        
+        # Get embedding dimension
+        from embedding import embedding_engine
+        embedding_dim = embedding_engine.get_embedding_dimension()
+        
+        logger.info(f"Embeddings generated for document: {doc_id}")
+        
+        return EmbeddingResponse(
+            document_id=doc_id,
+            chunks_processed=len(chunks_with_embeddings),
+            embedding_dimension=embedding_dim,
+            status="completed"
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Embedding generation error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Embedding generation failed")

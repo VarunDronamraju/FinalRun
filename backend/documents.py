@@ -11,6 +11,7 @@ import markdown
 
 from utils import get_file_hash
 from schemas import DocumentResponse
+from embedding import embedding_engine
 
 logger = logging.getLogger(__name__)
 
@@ -154,6 +155,29 @@ class DocumentProcessor:
             return overlap_text[space_index:].strip()
         
         return overlap_text
+
+    @staticmethod
+    def process_document_with_embeddings(doc_id: str, chunks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Process chunks and generate embeddings"""
+        try:
+            # Extract text from chunks
+            chunk_texts = [chunk["text"] for chunk in chunks]
+            
+            # Generate embeddings
+            logger.info(f"Generating embeddings for {len(chunk_texts)} chunks")
+            embeddings = embedding_engine.embed_texts(chunk_texts)
+            
+            # Add embeddings to chunks
+            for chunk, embedding in zip(chunks, embeddings):
+                chunk["embedding"] = embedding
+                chunk["embedding_dim"] = len(embedding)
+            
+            logger.info(f"Embeddings generated successfully for document: {doc_id}")
+            return chunks
+            
+        except Exception as e:
+            logger.error(f"Embedding generation failed: {e}")
+            raise
 
 # Global processor instance
 document_processor = DocumentProcessor()
