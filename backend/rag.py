@@ -194,7 +194,7 @@ class RAGPipeline:
         
         if use_web:
             try:
-                from backend.web_search import web_search
+                from web_search import web_search
                 web_results = await web_search.search(query, max_results=3)
                 web_context = web_search.format_web_context(web_results)
             except Exception as e:

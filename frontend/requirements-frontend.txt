@@ -1,0 +1,34 @@
+# PyQt6 Desktop Application Dependencies
+# Install with: pip install -r requirements-frontend.txt
+
+# Core PyQt6 Framework
+PyQt6==6.7.0
+PyQt6-Qt6==6.7.0
+
+# HTTP Client for API Communication
+httpx==0.27.0
+
+# Additional utilities
+pathlib2==2.3.7.post1; python_version < "3.4"
+
+# Development and Testing (optional)
+# pyqt6-tools==6.7.0    # Qt Designer and other tools
+# black==24.3.0          # Code formatting
+# pytest==8.1.1         # Testing framework
+
+# Note: Standard library modules used:
+# - json (built-in)
+# - logging (built-in) 
+# - asyncio (built-in)
+# - datetime (built-in)
+# - pathlib (built-in for Python 3.4+)
+# - typing (built-in for Python 3.5+)
+# - uuid (built-in)
+# - os (built-in)
+# - sys (built-in)
+# - signal (built-in)
+# - tempfile (built-in)
+# - hashlib (built-in)
+
+
+PyQt6-WebEngine==6.7.0 
