@@ -4,6 +4,7 @@ import hashlib
 from pathlib import Path
 from typing import List, Optional
 import logging
+import re
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +42,6 @@ def validate_file_size(file_size: int, max_size_mb: int = 50) -> bool:
 
 def sanitize_filename(filename: str) -> str:
     """Sanitize filename for safe storage"""
-    import re
     # Remove path traversal attempts
     filename = os.path.basename(filename)
     # Remove dangerous characters
@@ -81,3 +81,30 @@ def get_file_hash(file_path: str) -> str:
         for chunk in iter(lambda: f.read(4096), b""):
             hash_md5.update(chunk)
     return hash_md5.hexdigest()
+
+def clean_text(text: str) -> str:
+    """Clean text for processing"""
+    # Remove excessive whitespace
+    text = re.sub(r'\s+', ' ', text)
+    # Remove special characters but keep punctuation
+    text = re.sub(r'[^\w\s\.,!?;:()\-\'""]', ' ', text)
+    # Remove multiple spaces
+    text = re.sub(r' +', ' ', text)
+    return text.strip()
+
+def split_text_by_paragraphs(text: str) -> List[str]:
+    """Split text into paragraphs"""
+    paragraphs = text.split('\n\n')
+    return [p.strip() for p in paragraphs if p.strip()]
+
+def count_words(text: str) -> int:
+    """Count words in text"""
+    return len(text.split())
+
+def validate_chunk_quality(chunk_text: str, min_length: int = 50) -> bool:
+    """Validate if chunk has sufficient content"""
+    if len(chunk_text.strip()) < min_length:
+        return False
+    if count_words(chunk_text) < 5:
+        return False
+    return True
