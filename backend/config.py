@@ -11,7 +11,6 @@ class Settings(BaseSettings):
     embedding_batch_size: int = 32
     embedding_cache_dir: str = "./models"
 
-    
     # OAuth settings
     google_client_id: str = ""
     google_client_secret: str = ""
@@ -23,12 +22,8 @@ class Settings(BaseSettings):
     access_token_expire_minutes: int = 30
     
     # ML model settings
-    embedding_model: str = "all-MiniLM-L6-v2"
     ollama_url: str = "http://localhost:11434"
     ollama_model: str = "gemma:2b"
-    
-    # TAVILY settings
-    tavily_api_key: str = ""
     
     # App settings
     app_name: str = "RAG Desktop App"
@@ -42,24 +37,24 @@ class Settings(BaseSettings):
     s3_region: str = "us-east-1"
     disable_s3: bool = False
 
-    # Embedding model settings
-
-     # Qdrant settings  
+    # Qdrant settings  
     qdrant_url: str = "http://localhost:6333"
     qdrant_api_key: Optional[str] = None
     qdrant_collection_name: str = "documents"
 
-    ollama_url: str = "http://localhost:11434"
-    ollama_model: str = "gemma:2b"
     ollama_timeout: int = 60
 
     # RAG settings
     rag_max_results: int = 10
     rag_max_context_length: int = 10000
 
-    # LLM settings  
+    # Tavily settings
+    tavily_api_key: str = ""
+    web_search_enabled: bool = True
+    fallback_threshold: float = 0.3 
     
     class Config:
         env_file = ".env"
+        case_sensitive = False
 
 settings = Settings()

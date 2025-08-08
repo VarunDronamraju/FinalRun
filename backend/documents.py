@@ -11,7 +11,6 @@ import markdown
 
 from utils import get_file_hash
 from schemas import DocumentResponse
-from embedding import embedding_engine
 
 logger = logging.getLogger(__name__)
 
@@ -156,28 +155,119 @@ class DocumentProcessor:
         
         return overlap_text
 
-    @staticmethod
-    def process_document_with_embeddings(doc_id: str, chunks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """Process chunks and generate embeddings"""
-        try:
-            # Extract text from chunks
-            chunk_texts = [chunk["text"] for chunk in chunks]
-            
-            # Generate embeddings
-            logger.info(f"Generating embeddings for {len(chunk_texts)} chunks")
-            embeddings = embedding_engine.embed_texts(chunk_texts)
-            
-            # Add embeddings to chunks
-            for chunk, embedding in zip(chunks, embeddings):
-                chunk["embedding"] = embedding
-                chunk["embedding_dim"] = len(embedding)
-            
-            logger.info(f"Embeddings generated successfully for document: {doc_id}")
-            return chunks
-            
-        except Exception as e:
-            logger.error(f"Embedding generation failed: {e}")
-            raise
+def process_document_with_embeddings(doc_id: str, chunks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Process chunks and generate embeddings"""
+    try:
+        from .embeddings import embedding_engine
+        
+        # Extract text from chunks
+        chunk_texts = [chunk["text"] for chunk in chunks]
+        
+        # Generate embeddings
+        logger.info(f"Generating embeddings for {len(chunk_texts)} chunks")
+        embeddings = embedding_engine.embed_texts(chunk_texts)
+        
+        # Add embeddings to chunks
+        for chunk, embedding in zip(chunks, embeddings):
+            chunk["embedding"] = embedding
+            chunk["embedding_dim"] = len(embedding)
+        
+        logger.info(f"Embeddings generated successfully for document: {doc_id}")
+        return chunks
+        
+    except Exception as e:
+        logger.error(f"Embedding generation failed: {e}")
+        raise
+
+# Database functions
+def save_document_to_db(
+    db,
+    doc_id: str,
+    title: str,
+    file_path: str,
+    file_type: str,
+    file_size: int,
+    text_preview: str,
+    user_id: str = "default_user"
+):
+    """Save document metadata to database"""
+    try:
+        from database import Document as DBDocument, User as DBUser
+        
+        # Create or get user
+        user = db.query(DBUser).filter(DBUser.id == user_id).first()
+        if not user:
+            user = DBUser(
+                id=user_id,
+                email=f"{user_id}@localhost",
+                name="Default User"
+            )
+            db.add(user)
+            db.commit()
+        
+        file_hash = get_file_hash(file_path)
+        
+        db_document = DBDocument(
+            id=doc_id,
+            title=title,
+            file_path=file_path,
+            file_type=file_type,
+            file_size=file_size,
+            text_preview=text_preview,
+            file_hash=file_hash,
+            owner_id=user_id,
+            processing_status="extracted"
+        )
+        
+        db.add(db_document)
+        db.commit()
+        db.refresh(db_document)
+        
+        return db_document
+    except Exception as e:
+        logger.error(f"Database save failed: {e}")
+        raise
+
+def save_chunks_to_db(db, doc_id: str, chunks: List[Dict[str, Any]]):
+    """Save document chunks to database"""
+    try:
+        from database import DocumentChunk as DBChunk
+        
+        db_chunks = []
+        
+        for chunk in chunks:
+            db_chunk = DBChunk(
+                id=chunk["id"],
+                document_id=doc_id,
+                chunk_index=chunk["index"],
+                chunk_text=chunk["text"],
+                chunk_length=chunk["length"],
+                embedding_id=chunk["id"],  # Use same ID for Qdrant
+                metadata={"created_at": chunk["created_at"].isoformat()}
+            )
+            db_chunks.append(db_chunk)
+        
+        db.add_all(db_chunks)
+        db.commit()
+        
+        return db_chunks
+    except Exception as e:
+        logger.error(f"Chunks save failed: {e}")
+        raise
+
+def update_document_status(db, doc_id: str, status: str, chunk_count: int = None):
+    """Update document processing status"""
+    try:
+        from database import Document as DBDocument
+        
+        document = db.query(DBDocument).filter(DBDocument.id == doc_id).first()
+        if document:
+            document.processing_status = status
+            if chunk_count is not None:
+                document.chunk_count = chunk_count
+            db.commit()
+    except Exception as e:
+        logger.error(f"Status update failed: {e}")
 
 # Global processor instance
 document_processor = DocumentProcessor()

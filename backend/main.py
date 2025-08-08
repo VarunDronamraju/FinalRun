@@ -7,7 +7,7 @@ from datetime import datetime
 from config import settings
 from api_routes import router
 from schemas import ErrorResponse
-
+from database import init_database
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -19,6 +19,12 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI):
     """Application lifespan management"""
     logger.info("Starting RAG Desktop App...")
+    # Initialize database
+    try:
+        init_database()
+        logger.info("Database initialized")
+    except Exception as e:
+        logger.error(f"Database initialization failed: {e}")
     yield
     logger.info("Shutting down RAG Desktop App...")
 

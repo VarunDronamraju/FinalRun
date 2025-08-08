@@ -15,14 +15,22 @@ from utils import (
     get_file_type, validate_file_size, save_uploaded_file,
     generate_file_id, validate_chunk_quality
 )
-from documents import document_processor
+from documents import document_processor, process_document_with_embeddings
 from schemas import EmbeddingResponse, DocumentChunkWithEmbedding
 from rag import vector_store, rag_pipeline
 from llm import ollama_client
+from web_search import web_search
+
+from sqlalchemy.orm import Session
+from database import get_db, init_database, DBDocument, DBChunk
+from documents import save_document_to_db, save_chunks_to_db, update_document_status
+
+
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
-
+def get_database() -> Session:
+    return next(get_db())
 # In-memory storage for MVP (will be replaced with database)
 documents_store = {}
 
@@ -40,9 +48,13 @@ async def health_check():
         }
     )
 
+
 @router.post("/documents/upload", response_model=DocumentResponse)
-async def upload_document(file: UploadFile = File(...)):
-    """Upload document endpoint"""
+async def upload_document(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_database)
+):
+    """Upload document endpoint with database storage"""
     try:
         # Validate file
         if not file.filename:
@@ -79,20 +91,48 @@ async def upload_document(file: UploadFile = File(...)):
             extracted_text = ""
             text_preview = "Text extraction failed"
         
-        # Create document record
+        # Generate document ID
         doc_id = generate_file_id()
-        document = DocumentResponse(
-            id=doc_id,
-            title=file.filename,
-            file_type=file_type,
-            size=file_size,
-            upload_time=datetime.now(),
-            processing_status="extracted",
-            chunk_count=0,
-            text_preview=text_preview
-        )
         
-        # Store in memory (temporary)
+        # Save to database
+        try:
+            db_document = save_document_to_db(
+                db=db,
+                doc_id=doc_id,
+                title=file.filename,
+                file_path=file_path,
+                file_type=file_type,
+                file_size=file_size,
+                text_preview=text_preview
+            )
+            
+            # Create response
+            document = DocumentResponse(
+                id=db_document.id,
+                title=db_document.title,
+                file_type=db_document.file_type,
+                size=db_document.file_size,
+                upload_time=db_document.upload_time,
+                processing_status=db_document.processing_status,
+                chunk_count=db_document.chunk_count,
+                text_preview=db_document.text_preview
+            )
+            
+        except Exception as db_error:
+            logger.error(f"Database save failed: {db_error}")
+            # Fallback to memory storage
+            document = DocumentResponse(
+                id=doc_id,
+                title=file.filename,
+                file_type=file_type,
+                size=file_size,
+                upload_time=datetime.now(),
+                processing_status="extracted",
+                chunk_count=0,
+                text_preview=text_preview
+            )
+        
+        # Store in memory for backward compatibility
         documents_store[doc_id] = {
             "document": document,
             "file_path": file_path,
@@ -100,7 +140,7 @@ async def upload_document(file: UploadFile = File(...)):
             "chunks": []
         }
         
-        logger.info(f"Document uploaded and processed: {file.filename} ({file_size} bytes)")
+        logger.info(f"Document uploaded: {file.filename} ({file_size} bytes)")
         return document
         
     except HTTPException:
@@ -109,18 +149,28 @@ async def upload_document(file: UploadFile = File(...)):
         logger.error(f"Upload error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Upload failed")
 
+
+
 @router.post("/documents/{doc_id}/process", response_model=DocumentChunksResponse)
 async def process_document(
     doc_id: str,
-    request: ProcessDocumentRequest = ProcessDocumentRequest()
+    request: ProcessDocumentRequest = ProcessDocumentRequest(),
+    db: Session = Depends(get_database)
 ):
-    """Process document into chunks"""
-    if doc_id not in documents_store:
+    """Process document into chunks with database storage"""
+    # Check in database first
+    db_document = db.query(DBDocument).filter(DBDocument.id == doc_id).first()
+    if not db_document:
         raise HTTPException(status_code=404, detail="Document not found")
     
     try:
-        doc_data = documents_store[doc_id]
-        extracted_text = doc_data["extracted_text"]
+        # Get extracted text (from memory store for now)
+        doc_data = documents_store.get(doc_id)
+        if not doc_data:
+            # Load from file if not in memory
+            extracted_text = document_processor.extract_text(db_document.file_path, db_document.file_type)
+        else:
+            extracted_text = doc_data["extracted_text"]
         
         if not extracted_text:
             raise HTTPException(status_code=400, detail="No text extracted from document")
@@ -132,11 +182,17 @@ async def process_document(
             overlap=request.overlap
         )
         
-        # Filter out poor quality chunks
+        # Filter quality chunks
         quality_chunks = [
             chunk for chunk in chunks
             if validate_chunk_quality(chunk["text"])
         ]
+        
+        # Save chunks to database
+        save_chunks_to_db(db, doc_id, quality_chunks)
+        
+        # Update document status
+        update_document_status(db, doc_id, "chunked", len(quality_chunks))
         
         # Convert to response format
         chunk_responses = [
@@ -150,12 +206,13 @@ async def process_document(
             for chunk in quality_chunks
         ]
         
-        # Update document with chunks
-        doc_data["chunks"] = quality_chunks
-        doc_data["document"].chunk_count = len(quality_chunks)
-        doc_data["document"].processing_status = "chunked"
+        # Update memory store for backward compatibility
+        if doc_id in documents_store:
+            documents_store[doc_id]["chunks"] = quality_chunks
+            documents_store[doc_id]["document"].chunk_count = len(quality_chunks)
+            documents_store[doc_id]["document"].processing_status = "chunked"
         
-        logger.info(f"Document chunked: {doc_id} ({len(quality_chunks)} chunks)")
+        logger.info(f"Document chunked and saved to DB: {doc_id} ({len(quality_chunks)} chunks)")
         
         return DocumentChunksResponse(
             document_id=doc_id,
@@ -198,18 +255,32 @@ async def get_document_chunks(doc_id: str):
 @router.get("/documents", response_model=DocumentListResponse)
 async def list_documents(
     skip: int = 0,
-    limit: int = 10
+    limit: int = 10,
+    db: Session = Depends(get_database)
 ):
-    """List documents endpoint"""
+    """List documents from database"""
     try:
-        docs = list(documents_store.values())
-        total = len(docs)
+        # Query from database
+        documents = db.query(DBDocument).offset(skip).limit(limit).all()
+        total = db.query(DBDocument).count()
         
-        # Simple pagination
-        paginated_docs = docs[skip:skip + limit]
+        # Convert to response format
+        document_responses = [
+            DocumentResponse(
+                id=doc.id,
+                title=doc.title,
+                file_type=doc.file_type,
+                size=doc.file_size,
+                upload_time=doc.upload_time,
+                processing_status=doc.processing_status,
+                chunk_count=doc.chunk_count,
+                text_preview=doc.text_preview
+            )
+            for doc in documents
+        ]
         
         return DocumentListResponse(
-            documents=[item["document"] for item in paginated_docs],
+            documents=document_responses,
             total=total,
             page=skip // limit + 1,
             limit=limit
@@ -283,7 +354,7 @@ async def generate_embeddings(doc_id: str):
             raise HTTPException(status_code=400, detail="Document not chunked yet")
         
         # Generate embeddings
-        chunks_with_embeddings = document_processor.process_document_with_embeddings(doc_id, chunks)
+        chunks_with_embeddings = process_document_with_embeddings(doc_id, chunks)
         
         # Update storage
         doc_data["chunks"] = chunks_with_embeddings
@@ -506,4 +577,74 @@ async def llm_status():
         "ollama_url": settings.ollama_url,
         "model": settings.ollama_model,
         "status": "ready" if ollama_available else "unavailable"
+    }
+
+@router.post("/rag/answer-with-fallback")
+async def rag_answer_with_fallback(request: dict):
+    """RAG with web search fallback"""
+    try:
+        query = request.get("query")
+        max_results = request.get("max_results", 5)
+        use_fallback = request.get("use_fallback", True)
+        
+        if not query:
+            raise HTTPException(status_code=400, detail="Query is required")
+        
+        # Check if Ollama is available
+        if not await ollama_client.is_available():
+            raise HTTPException(status_code=503, detail="Ollama service unavailable")
+        
+        result = await rag_pipeline.generate_answer_with_fallback(
+            query, max_results, use_fallback
+        )
+        return result
+        
+    except Exception as e:
+        logger.error(f"RAG fallback error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="RAG with fallback failed")
+
+@router.post("/search/web")
+async def web_search_endpoint(request: dict):
+    """Web search endpoint"""
+    try:
+        query = request.get("query")
+        max_results = request.get("max_results", 3)
+        
+        if not query:
+            raise HTTPException(status_code=400, detail="Query is required")
+        
+        if not web_search.is_available():
+            raise HTTPException(status_code=503, detail="Web search not available")
+        
+        results = await web_search.search(query, max_results)
+        
+        return {
+            "query": query,
+            "results": results,
+            "total_found": len(results)
+        }
+        
+    except Exception as e:
+        logger.error(f"Web search error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Web search failed")
+
+# REPLACE the search_capabilities function with:
+@router.get("/search/capabilities")
+async def search_capabilities():
+    """Get search capabilities"""
+    try:
+        web_available = web_search.is_available()
+    except:
+        web_available = False
+        
+    import os
+    from dotenv import load_dotenv
+    load_dotenv()
+    tavily_key = os.getenv("TAVILY_API_KEY", "")
+    
+    return {
+        "local_search": True,
+        "web_search": web_available,
+        "fallback_enabled": web_available,
+        "tavily_configured": bool(tavily_key)
     }
