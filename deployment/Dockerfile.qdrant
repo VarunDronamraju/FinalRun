@@ -1,0 +1,10 @@
+FROM qdrant/qdrant:latest
+
+# Copy any custom configuration if needed
+# COPY qdrant-config.yaml /qdrant/config/
+
+# Expose ports
+EXPOSE 6333 6334
+
+# Default command
+CMD ["./qdrant"]
