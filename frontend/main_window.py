@@ -16,7 +16,7 @@ from PyQt6.QtWidgets import (
     QListWidget, QListWidgetItem, QProgressBar, QFileDialog, QMessageBox,
     QStatusBar, QMenuBar, QMenu, QSystemTrayIcon, QApplication, QGridLayout,
     QSizePolicy, QSpacerItem, QDialog, QDialogButtonBox, QFormLayout,
-    QLineEdit, QCheckBox, QSlider, QComboBox
+    QLineEdit, QCheckBox, QSlider, QComboBox, QStackedWidget, QGroupBox
 )
 from PyQt6.QtCore import (
     Qt, QThread, pyqtSignal, QTimer, QPropertyAnimation, QEasingCurve,
@@ -30,9 +30,16 @@ from PyQt6.QtGui import (
 
 from api_client import SyncAPIClient, APIError
 from session_manager import SessionManager
-from PyQt6.QtWidgets import QStackedWidget
 from auth_manager import AuthenticationManager
 from login_widget import AuthenticationWidget, UserProfileWidget
+from system_tray_manager import (
+    initialize_system_tray, get_system_tray_manager, cleanup_system_tray,
+    NotificationLevel
+)
+from background_operations import (
+    initialize_background_operations, get_background_operations_manager, 
+    cleanup_background_operations
+)
 
 logger = logging.getLogger(__name__)
 
@@ -812,6 +819,98 @@ class SettingsWidget(QWidget):
             self.session_manager.cleanup_old_cache(days=0)  # Clear all
             QMessageBox.information(self, "Success", "Cache cleared successfully!")
 
+class UserMenuWidget(QWidget):
+    """User menu widget for the top bar"""
+    
+    logout_requested = pyqtSignal()
+    profile_requested = pyqtSignal()
+    
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.user_info = {}
+        self.setup_ui()
+        
+    def setup_ui(self):
+        """Setup user menu UI"""
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(8, 4, 8, 4)
+        layout.setSpacing(8)
+        
+        # User avatar/name button
+        self.user_button = QPushButton("👤 Guest")
+        self.user_button.setProperty("class", "secondary")
+        self.user_button.setFixedHeight(32)
+        self.user_button.clicked.connect(self.profile_requested.emit)
+        
+        # Dropdown menu (will be implemented as context menu)
+        self.user_button.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.user_button.customContextMenuRequested.connect(self.show_user_menu)
+        
+        layout.addWidget(self.user_button)
+        
+    def update_user_info(self, user_info: dict):
+        """Update user information"""
+        self.user_info = user_info
+        
+        if user_info:
+            name = user_info.get("name", "User")
+            is_demo = user_info.get("demo_mode", False)
+            
+            if is_demo:
+                self.user_button.setText(f"🎯 {name}")
+                self.user_button.setToolTip("Demo Mode - Full features available")
+            else:
+                first_name = name.split()[0] if name else "User"
+                self.user_button.setText(f"👤 {first_name}")
+                self.user_button.setToolTip(f"Authenticated as {user_info.get('email', 'unknown')}")
+        else:
+            self.user_button.setText("👤 Guest")
+            self.user_button.setToolTip("Not authenticated")
+            
+    def show_user_menu(self, position):
+        """Show user context menu"""
+        menu = QMenu(self)
+        menu.setStyleSheet("""
+            QMenu {
+                background: rgba(31, 41, 55, 0.95);
+                border: 1px solid rgba(255, 255, 255, 0.2);
+                border-radius: 8px;
+                color: #e5e5e5;
+                padding: 8px;
+            }
+            QMenu::item {
+                background: transparent;
+                padding: 8px 16px;
+                border-radius: 4px;
+            }
+            QMenu::item:selected {
+                background: rgba(59, 130, 246, 0.2);
+            }
+        """)
+        
+        if self.user_info:
+            # User info header
+            user_email = self.user_info.get("email", "unknown")
+            info_action = menu.addAction(f"📧 {user_email}")
+            info_action.setEnabled(False)
+            
+            menu.addSeparator()
+            
+            # Profile action
+            profile_action = menu.addAction("👤 Profile")
+            profile_action.triggered.connect(self.profile_requested.emit)
+            
+            menu.addSeparator()
+            
+            # Logout action
+            logout_action = menu.addAction("🚪 Logout")
+            logout_action.triggered.connect(self.logout_requested.emit)
+        else:
+            login_action = menu.addAction("🔑 Login")
+            login_action.triggered.connect(self.profile_requested.emit)
+            
+        menu.exec(self.user_button.mapToGlobal(position))
+
 # Worker Threads
 class ChatWorkerThread(QThread):
     """Worker thread for chat operations"""
@@ -950,304 +1049,34 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.api_client = SyncAPIClient()
         self.session_manager = SessionManager()
-        self.setup_ui()
-        self.setup_menu_bar()
-        self.setup_status_bar()
-        self.setup_system_tray()
-        self.load_styles()
-        self.restore_window_state()
-        self.check_backend_connection()
         
-    def setup_ui(self):
-        """Setup main window UI"""
-        self.setWindowTitle("RAG Desktop - AI Document Assistant")
-        self.setMinimumSize(1000, 700)
-        self.resize(1200, 800)
-        
-        # Central widget
-        central_widget = QWidget()
-        self.setCentralWidget(central_widget)
-        
-        # Main layout
-        layout = QVBoxLayout(central_widget)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(0)
-        
-        # Connection status
-        self.connection_label = QLabel("🔄 Checking connection...")
-        self.connection_label.setStyleSheet("padding: 8px; background: rgba(255, 193, 7, 0.1); color: #ffc107;")
-        layout.addWidget(self.connection_label)
-        
-        # Tab widget
-        self.tab_widget = QTabWidget()
-        
-        # Chat tab
-        self.chat_widget = ChatWidget(self.api_client, self.session_manager)
-        self.tab_widget.addTab(self.chat_widget, "💬 Chat")
-        
-        # Documents tab
-        self.document_widget = DocumentWidget(self.api_client, self.session_manager)
-        self.tab_widget.addTab(self.document_widget, "📄 Documents")
-        
-        # Settings tab
-        self.settings_widget = SettingsWidget(self.session_manager)
-        self.tab_widget.addTab(self.settings_widget, "⚙️ Settings")
-        
-        layout.addWidget(self.tab_widget)
-        
-    def setup_menu_bar(self):
-        """Setup application menu bar"""
-        menubar = self.menuBar()
-        
-        # File menu
-        file_menu = menubar.addMenu("&File")
-        
-        new_chat_action = QAction("&New Chat", self)
-        new_chat_action.setShortcut(QKeySequence.StandardKey.New)
-        new_chat_action.triggered.connect(self.new_chat)
-        file_menu.addAction(new_chat_action)
-        
-        file_menu.addSeparator()
-        
-        upload_action = QAction("&Upload Documents...", self)
-        upload_action.setShortcut(QKeySequence("Ctrl+U"))
-        upload_action.triggered.connect(self.upload_documents)
-        file_menu.addAction(upload_action)
-        
-        file_menu.addSeparator()
-        
-        exit_action = QAction("E&xit", self)
-        exit_action.setShortcut(QKeySequence.StandardKey.Quit)
-        exit_action.triggered.connect(self.close)
-        file_menu.addAction(exit_action)
-        
-        # Edit menu
-        edit_menu = menubar.addMenu("&Edit")
-        
-        clear_chat_action = QAction("&Clear Chat", self)
-        clear_chat_action.triggered.connect(self.clear_chat)
-        edit_menu.addAction(clear_chat_action)
-        
-        # View menu
-        view_menu = menubar.addMenu("&View")
-        
-        chat_action = QAction("&Chat", self)
-        chat_action.setShortcut(QKeySequence("Ctrl+1"))
-        chat_action.triggered.connect(lambda: self.tab_widget.setCurrentIndex(0))
-        view_menu.addAction(chat_action)
-        
-        docs_action = QAction("&Documents", self)
-        docs_action.setShortcut(QKeySequence("Ctrl+2"))
-        docs_action.triggered.connect(lambda: self.tab_widget.setCurrentIndex(1))
-        view_menu.addAction(docs_action)
-        
-        settings_action = QAction("&Settings", self)
-        settings_action.setShortcut(QKeySequence("Ctrl+3"))
-        settings_action.triggered.connect(lambda: self.tab_widget.setCurrentIndex(2))
-        view_menu.addAction(settings_action)
-        
-        # Help menu
-        help_menu = menubar.addMenu("&Help")
-        
-        about_action = QAction("&About", self)
-        about_action.triggered.connect(self.show_about)
-        help_menu.addAction(about_action)
-        
-    def setup_status_bar(self):
-        """Setup status bar"""
-        self.status_bar = QStatusBar()
-        self.setStatusBar(self.status_bar)
-        
-    def new_chat(self):
-        """Start a new chat session"""
-        self.chat_widget.clear_chat()
-        self.tab_widget.setCurrentIndex(0)  # Switch to chat tab
-        
-    def upload_documents(self):
-        """Open document upload dialog"""
-        self.tab_widget.setCurrentIndex(1)  # Switch to documents tab
-        self.document_widget.upload_documents()
-        
-    def clear_chat(self):
-        """Clear the chat history"""
-        self.chat_widget.clear_chat()
-        
-    def show_about(self):
-        """Show about dialog"""
-        from PyQt6.QtWidgets import QMessageBox
-        msg = QMessageBox(self)
-        msg.setWindowTitle("About RAG Desktop")
-        msg.setText("RAG Desktop - AI Document Assistant")
-        msg.setInformativeText("Version 1.0.0\n\nA professional desktop application for RAG-powered document analysis and chat.")
-        msg.setIcon(QMessageBox.Icon.Information)
-        msg.exec()
-        
-    def setup_system_tray(self):
-        """Setup system tray icon (placeholder)"""
-        pass
-        
-    def load_styles(self):
-        """Load application styles"""
-        try:
-            style_file = Path(__file__).parent / "styles.qss"
-            if style_file.exists():
-                with open(style_file, 'r', encoding='utf-8') as f:
-                    self.setStyleSheet(f.read())
-        except Exception as e:
-            print(f"Failed to load styles: {e}")
-            
-    def restore_window_state(self):
-        """Restore window state from session"""
-        pass
-        
-    def check_backend_connection(self):
-        """Check backend connection status"""
-        # This will be implemented to show connection status
-        pass
-
-
-
-# ADD THESE IMPORTS TO THE TOP OF main_window.py
-
-
-
-# ADD THIS NEW CLASS TO main_window.py (INSERT AFTER MessageBubble CLASS)
-
-class UserMenuWidget(QWidget):
-    """User menu widget for the top bar"""
-    
-    logout_requested = pyqtSignal()
-    profile_requested = pyqtSignal()
-    
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.user_info = {}
-        self.setup_ui()
-        
-    def setup_ui(self):
-        """Setup user menu UI"""
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(8, 4, 8, 4)
-        layout.setSpacing(8)
-        
-        # User avatar/name button
-        self.user_button = QPushButton("👤 Guest")
-        self.user_button.setProperty("class", "secondary")
-        self.user_button.setFixedHeight(32)
-        self.user_button.clicked.connect(self.profile_requested.emit)
-        
-        # Dropdown menu (will be implemented as context menu)
-        self.user_button.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-        self.user_button.customContextMenuRequested.connect(self.show_user_menu)
-        
-        layout.addWidget(self.user_button)
-        
-    def update_user_info(self, user_info: dict):
-        """Update user information"""
-        self.user_info = user_info
-        
-        if user_info:
-            name = user_info.get("name", "User")
-            is_demo = user_info.get("demo_mode", False)
-            
-            if is_demo:
-                self.user_button.setText(f"🎯 {name}")
-                self.user_button.setToolTip("Demo Mode - Full features available")
-            else:
-                first_name = name.split()[0] if name else "User"
-                self.user_button.setText(f"👤 {first_name}")
-                self.user_button.setToolTip(f"Authenticated as {user_info.get('email', 'unknown')}")
-        else:
-            self.user_button.setText("👤 Guest")
-            self.user_button.setToolTip("Not authenticated")
-            
-    def show_user_menu(self, position):
-        """Show user context menu"""
-        from PyQt6.QtWidgets import QMenu
-        
-        menu = QMenu(self)
-        menu.setStyleSheet("""
-            QMenu {
-                background: rgba(31, 41, 55, 0.95);
-                border: 1px solid rgba(255, 255, 255, 0.2);
-                border-radius: 8px;
-                color: #e5e5e5;
-                padding: 8px;
-            }
-            QMenu::item {
-                background: transparent;
-                padding: 8px 16px;
-                border-radius: 4px;
-            }
-            QMenu::item:selected {
-                background: rgba(59, 130, 246, 0.2);
-            }
-        """)
-        
-        if self.user_info:
-            # User info header
-            user_email = self.user_info.get("email", "unknown")
-            info_action = menu.addAction(f"📧 {user_email}")
-            info_action.setEnabled(False)
-            
-            menu.addSeparator()
-            
-            # Profile action
-            profile_action = menu.addAction("👤 Profile")
-            profile_action.triggered.connect(self.profile_requested.emit)
-            
-            menu.addSeparator()
-            
-            # Logout action
-            logout_action = menu.addAction("🚪 Logout")
-            logout_action.triggered.connect(self.logout_requested.emit)
-        else:
-            login_action = menu.addAction("🔑 Login")
-            login_action.triggered.connect(self.profile_requested.emit)
-            
-        menu.exec(self.user_button.mapToGlobal(position))
-
-
-
-    def __init__(self):
-        super().__init__()
-        self.api_client = SyncAPIClient()
-        self.session_manager = SessionManager()
-        
-        # ADD THESE LINES:
+        # Authentication (Phase 12)
         self.auth_manager = AuthenticationManager(self.session_manager, self.api_client)
         self.is_authenticated = False
         self.current_user = {}
         
+        # Phase 13: System Tray and Background Operations
+        self.tray_manager = None
+        self.background_ops = None
+        self.minimize_to_tray_enabled = True
+        self.close_to_tray_enabled = True
+        
         self.setup_ui()
         self.setup_menu_bar()
         self.setup_status_bar()
-        self.setup_system_tray()
-        self.load_styles()
-        self.restore_window_state()
-        
-        # ADD THIS LINE:
         self.setup_authentication()
         
-        self.check_backend_connection()
-
-    # ADD THIS NEW METHOD TO MainWindow CLASS:
-    def setup_authentication(self):
-        """Setup authentication system"""
-        # Connect auth manager signals
-        self.auth_manager.auth_state_changed.connect(self.on_auth_state_changed)
-        self.auth_manager.user_info_updated.connect(self.on_user_info_updated)
-        self.auth_manager.auth_error.connect(self.on_auth_error)
+        # Phase 13: Initialize system tray and background operations
+        self.setup_system_tray()
+        self.setup_background_operations()
         
-        # Check if already authenticated
-        if self.auth_manager.is_authenticated():
-            user_info = self.auth_manager.get_user_info()
-            if user_info:
-                self.on_user_info_updated(user_info)
-                self.on_auth_state_changed(True)
-                
-    # MODIFY THE setup_ui METHOD IN MainWindow CLASS:
-    # REPLACE THE EXISTING setup_ui METHOD WITH THIS:
+        self.load_styles()
+        self.restore_window_state()
+        self.check_backend_connection()
+        
+        # Apply tray settings
+        self.apply_tray_settings()
+        
     def setup_ui(self):
         """Setup main window UI"""
         self.setWindowTitle("RAG Desktop - AI Document Assistant")
@@ -1310,7 +1139,6 @@ class UserMenuWidget(QWidget):
         layout.addWidget(top_bar)
         layout.addWidget(self.content_stack)
         
-    # ADD THIS NEW METHOD TO MainWindow CLASS:
     def setup_main_app_widget(self):
         """Setup the main application widget (tabs)"""
         layout = QVBoxLayout(self.main_app_widget)
@@ -1333,7 +1161,20 @@ class UserMenuWidget(QWidget):
         
         layout.addWidget(self.tab_widget)
         
-    # ADD THESE NEW METHODS TO MainWindow CLASS:
+    def setup_authentication(self):
+        """Setup authentication system"""
+        # Connect auth manager signals
+        self.auth_manager.auth_state_changed.connect(self.on_auth_state_changed)
+        self.auth_manager.user_info_updated.connect(self.on_user_info_updated)
+        self.auth_manager.auth_error.connect(self.on_auth_error)
+        
+        # Check if already authenticated
+        if self.auth_manager.is_authenticated():
+            user_info = self.auth_manager.get_user_info()
+            if user_info:
+                self.on_user_info_updated(user_info)
+                self.on_auth_state_changed(True)
+                
     def on_authentication_changed(self, authenticated: bool, user_info: dict):
         """Handle authentication state change"""
         self.is_authenticated = authenticated
@@ -1393,8 +1234,6 @@ class UserMenuWidget(QWidget):
             
     def show_user_profile(self):
         """Show user profile dialog"""
-        from PyQt6.QtWidgets import QDialog, QVBoxLayout, QDialogButtonBox
-        
         dialog = QDialog(self)
         dialog.setWindowTitle("User Profile")
         dialog.setModal(True)
@@ -1416,10 +1255,559 @@ class UserMenuWidget(QWidget):
         layout.addWidget(buttons)
         
         dialog.exec()
+        
+    def setup_system_tray(self):
+        """Setup system tray integration"""
+        try:
+            # Initialize system tray manager
+            self.tray_manager = initialize_system_tray(self, self.session_manager)
+            
+            if self.tray_manager and self.tray_manager.is_initialized:
+                # Connect tray signals
+                self.tray_manager.tray_activated.connect(self.on_tray_activated)
+                self.tray_manager.notification_clicked.connect(self.on_tray_notification_clicked)
+                self.tray_manager.settings_changed.connect(self.on_tray_settings_changed)
+                
+                logger.info("System tray integration initialized")
+                
+                # Show startup notification if enabled
+                self.show_tray_notification(
+                    "RAG Desktop Started",
+                    "Application is running in the system tray",
+                    NotificationLevel.INFO
+                )
+            else:
+                logger.warning("System tray not available")
+                
+        except Exception as e:
+            logger.error(f"Failed to setup system tray: {e}")
+            
+    def setup_background_operations(self):
+        """Setup background operations manager"""
+        try:
+            # Initialize background operations
+            self.background_ops = initialize_background_operations(self.api_client, self.session_manager)
+            
+            if self.background_ops:
+                # Connect background operation signals
+                self.background_ops.task_started.connect(self.on_background_task_started)
+                self.background_ops.task_progress.connect(self.on_background_task_progress)
+                self.background_ops.task_completed.connect(self.on_background_task_completed)
+                self.background_ops.health_status_changed.connect(self.on_health_status_changed)
+                
+                # Start health monitoring
+                self.background_ops.start_health_monitoring()
+                
+                logger.info("Background operations initialized")
+            else:
+                logger.warning("Failed to initialize background operations")
+                
+        except Exception as e:
+            logger.error(f"Failed to setup background operations: {e}")
+            
+    def apply_tray_settings(self):
+        """Apply system tray settings"""
+        if self.tray_manager:
+            settings = self.tray_manager.settings
+            
+            self.minimize_to_tray_enabled = settings.get("minimize_to_tray", True)
+            self.close_to_tray_enabled = settings.get("close_to_tray", True)
+            
+            # Start minimized if configured
+            if settings.get("start_minimized", False):
+                QTimer.singleShot(1000, self.hide)  # Hide after startup
+                
+    # System Tray Event Handlers
+    def on_tray_activated(self, activation_type: str):
+        """Handle system tray activation"""
+        logger.debug(f"Tray activated: {activation_type}")
+        
+    def on_tray_notification_clicked(self, notification_id: str):
+        """Handle tray notification click"""
+        self.show()
+        self.raise_()
+        self.activateWindow()
+        
+    def on_tray_settings_changed(self, new_settings: Dict[str, Any]):
+        """Handle tray settings change"""
+        self.apply_tray_settings()
+        
+        # Show confirmation notification
+        self.show_tray_notification(
+            "Settings Updated",
+            "System tray settings have been applied",
+            NotificationLevel.SUCCESS
+        )
+        
+    # Background Operations Event Handlers
+    def on_background_task_started(self, task_id: str, task_type: str):
+        """Handle background task start"""
+        logger.info(f"Background task started: {task_id} ({task_type})")
+        
+        # Show notification for important tasks
+        if task_type in ["document_processing"]:
+            self.show_tray_notification(
+                "Processing Document",
+                "Document processing started in background",
+                NotificationLevel.INFO,
+                duration=3000
+            )
+            
+    def on_background_task_progress(self, task_id: str, progress: int):
+        """Handle background task progress"""
+        logger.debug(f"Background task progress: {task_id} - {progress}%")
+        
+        # Update status bar or tray tooltip with progress
+        if self.tray_manager and progress % 25 == 0:  # Update every 25%
+            self.tray_manager.update_tray_icon()
+            
+    def on_background_task_completed(self, task_id: str, success: bool, message: str):
+        """Handle background task completion"""
+        logger.info(f"Background task completed: {task_id} - {'Success' if success else 'Failed'}: {message}")
+        
+        # Show completion notification
+        if success:
+            self.show_tray_notification(
+                "Task Completed",
+                message,
+                NotificationLevel.SUCCESS,
+                duration=3000
+            )
+        else:
+            self.show_tray_notification(
+                "Task Failed",
+                message,
+                NotificationLevel.ERROR,
+                duration=5000
+            )
+            
+    def on_health_status_changed(self, status: Dict[str, Any]):
+        """Handle health status change"""
+        overall_status = status.get("overall_status", "unknown")
+        
+        # Update UI based on health status
+        if overall_status == "error":
+            self.connection_label.setText("🔴 System Health: Error")
+            self.connection_label.setStyleSheet("padding: 8px; background: rgba(239, 68, 68, 0.1); color: #ef4444;")
+        elif overall_status == "degraded":
+            self.connection_label.setText("🟡 System Health: Degraded")
+            self.connection_label.setStyleSheet("padding: 8px; background: rgba(245, 158, 11, 0.1); color: #f59e0b;")
+        else:
+            self.connection_label.setText("🟢 System Health: Good")
+            self.connection_label.setStyleSheet("padding: 8px; background: rgba(16, 185, 129, 0.1); color: #10b981;")
+            
+    # Utility Methods
+    def show_tray_notification(self, title: str, message: str, level: str = NotificationLevel.INFO, duration: int = 5000):
+        """Show system tray notification"""
+        if self.tray_manager:
+            self.tray_manager.show_notification(title, message, level, duration)
+        else:
+            logger.info(f"Notification: {title} - {message}")
+            
+    def schedule_document_processing(self, document_id: str):
+        """Schedule document processing in background"""
+        if self.background_ops:
+            task_id = self.background_ops.schedule_document_processing(document_id)
+            if task_id:
+                logger.info(f"Scheduled document processing: {document_id} (task: {task_id})")
+                return task_id
+        return None
+        
+    def upload_documents(self):
+        """Enhanced document upload with background processing"""
+        # Switch to documents tab if we have tab_widget
+        if hasattr(self, 'tab_widget'):
+            self.tab_widget.setCurrentIndex(1)
 
-# ALSO ADD THIS IMPORT TO THE TOP OF main_window.py:
+        # Get file paths
+        file_paths, _ = QFileDialog.getOpenFileNames(
+            self,
+            "Select Documents",
+            "",
+            "Documents (*.pdf *.docx *.txt *.md);;All Files (*)"
+        )
+
+        if file_paths:
+            # Upload files and schedule background processing
+            for file_path in file_paths:
+                try:
+                    # Upload file
+                    result = self.api_client.upload_document(file_path)
+                    if result and "id" in result:
+                        doc_id = result["id"]
+
+                        # Schedule background processing
+                        task_id = self.schedule_document_processing(doc_id)
+
+                        if task_id:
+                            self.show_tray_notification(
+                                "Document Uploaded",
+                                f"Processing {Path(file_path).name} in background",
+                                NotificationLevel.INFO
+                            )
+
+                except Exception as e:
+                    logger.error(f"Upload failed for {file_path}: {e}")
+                    self.show_tray_notification(
+                        "Upload Failed",
+                        f"Failed to upload {Path(file_path).name}",
+                        NotificationLevel.ERROR
+                    )
+
+            # Refresh document list
+            if hasattr(self, 'document_widget'):
+                self.document_widget.refresh_documents()
+        
+    # Override Window Event Handlers for Phase 13
+    def closeEvent(self, event):
+        """Handle window close event with tray integration"""
+        if self.close_to_tray_enabled and self.tray_manager and self.tray_manager.is_initialized:
+            # Minimize to tray instead of closing
+            self.hide()
+            
+            # Show tray message on first minimize
+            if not hasattr(self, '_first_tray_message_shown'):
+                self.show_tray_notification(
+                    "RAG Desktop",
+                    "Application minimized to system tray. Right-click the tray icon to access options.",
+                    NotificationLevel.INFO,
+                    duration=4000
+                )
+                self._first_tray_message_shown = True
+                
+            event.ignore()
+        else:
+            # Normal close - save state and cleanup
+            self.cleanup_and_exit()
+            event.accept()
+            
+    def changeEvent(self, event):
+        """Handle window state changes"""
+        if event.type() == QEvent.Type.WindowStateChange:
+            if self.isMinimized() and self.minimize_to_tray_enabled and self.tray_manager:
+                # Hide window when minimized if tray is available
+                QTimer.singleShot(0, self.hide)
+        super().changeEvent(event)
+        
+    def cleanup_and_exit(self):
+        """Cleanup resources before application exit"""
+        try:
+            # Save window state
+            self.session_manager.save_window_state(self)
+            
+            # Cleanup background operations
+            if self.background_ops:
+                cleanup_background_operations()
+                
+            # Cleanup system tray
+            if self.tray_manager:
+                cleanup_system_tray()
+                
+            logger.info("Application cleanup completed")
+            
+        except Exception as e:
+            logger.error(f"Error during cleanup: {e}")
+            
+    def setup_menu_bar(self):
+        """Setup application menu bar with Phase 13 enhancements"""
+        menubar = self.menuBar()
+        
+        # File menu
+        file_menu = menubar.addMenu("&File")
+        
+        new_chat_action = QAction("&New Chat", self)
+        new_chat_action.setShortcut(QKeySequence.StandardKey.New)
+        new_chat_action.triggered.connect(self.new_chat)
+        file_menu.addAction(new_chat_action)
+        
+        file_menu.addSeparator()
+        
+        upload_action = QAction("&Upload Documents...", self)
+        upload_action.setShortcut(QKeySequence("Ctrl+U"))
+        upload_action.triggered.connect(self.upload_documents)
+        file_menu.addAction(upload_action)
+        
+        file_menu.addSeparator()
+        
+        # Phase 13: Background tasks menu
+        tasks_action = QAction("Background &Tasks...", self)
+        tasks_action.triggered.connect(self.show_background_tasks)
+        file_menu.addAction(tasks_action)
+        
+        file_menu.addSeparator()
+        
+        exit_action = QAction("E&xit", self)
+        exit_action.setShortcut(QKeySequence.StandardKey.Quit)
+        exit_action.triggered.connect(self.cleanup_and_exit)
+        file_menu.addAction(exit_action)
+        
+        # Edit menu
+        edit_menu = menubar.addMenu("&Edit")
+        
+        clear_chat_action = QAction("&Clear Chat", self)
+        clear_chat_action.triggered.connect(self.clear_chat)
+        edit_menu.addAction(clear_chat_action)
+        
+        # View menu
+        view_menu = menubar.addMenu("&View")
+        
+        chat_action = QAction("&Chat", self)
+        chat_action.setShortcut(QKeySequence("Ctrl+1"))
+        chat_action.triggered.connect(lambda: self.tab_widget.setCurrentIndex(0))
+        view_menu.addAction(chat_action)
+        
+        docs_action = QAction("&Documents", self)
+        docs_action.setShortcut(QKeySequence("Ctrl+2"))
+        docs_action.triggered.connect(lambda: self.tab_widget.setCurrentIndex(1))
+        view_menu.addAction(docs_action)
+        
+        settings_action = QAction("&Settings", self)
+        settings_action.setShortcut(QKeySequence("Ctrl+3"))
+        settings_action.triggered.connect(lambda: self.tab_widget.setCurrentIndex(2))
+        view_menu.addAction(settings_action)
+        
+        view_menu.addSeparator()
+        
+        # Phase 13: Window management
+        minimize_tray_action = QAction("&Minimize to Tray", self)
+        minimize_tray_action.setShortcut(QKeySequence("Ctrl+M"))
+        minimize_tray_action.triggered.connect(self.hide)
+        view_menu.addAction(minimize_tray_action)
+        
+        # Tools menu (Phase 13)
+        tools_menu = menubar.addMenu("&Tools")
+        
+        system_status_action = QAction("&System Status", self)
+        system_status_action.triggered.connect(self.show_system_status)
+        tools_menu.addAction(system_status_action)
+        
+        tray_settings_action = QAction("&Tray Settings...", self)
+        tray_settings_action.triggered.connect(self.show_tray_settings)
+        tools_menu.addAction(tray_settings_action)
+        
+        tools_menu.addSeparator()
+        
+        background_settings_action = QAction("&Background Operations...", self)
+        background_settings_action.triggered.connect(self.show_background_settings)
+        tools_menu.addAction(background_settings_action)
+        
+        # Help menu
+        help_menu = menubar.addMenu("&Help")
+        
+        about_action = QAction("&About", self)
+        about_action.triggered.connect(self.show_about)
+        help_menu.addAction(about_action)
+        
+    def setup_status_bar(self):
+        """Setup status bar"""
+        self.status_bar = QStatusBar()
+        self.setStatusBar(self.status_bar)
+        
+    def new_chat(self):
+        """Start a new chat session"""
+        self.chat_widget.clear_chat()
+        self.tab_widget.setCurrentIndex(0)  # Switch to chat tab
+        
+    def clear_chat(self):
+        """Clear the chat history"""
+        self.chat_widget.clear_chat()
+        
+    def show_about(self):
+        """Show about dialog"""
+        msg = QMessageBox(self)
+        msg.setWindowTitle("About RAG Desktop")
+        msg.setText("RAG Desktop - AI Document Assistant")
+        msg.setInformativeText("Version 1.0.0\n\nA professional desktop application for RAG-powered document analysis and chat.")
+        msg.setIcon(QMessageBox.Icon.Information)
+        msg.exec()
+        
+    # New Menu Action Handlers (Phase 13)
+    def show_background_tasks(self):
+        """Show background tasks dialog"""
+        if self.background_ops:
+            dialog = QDialog(self)
+            dialog.setWindowTitle("Background Tasks")
+            dialog.setModal(True)
+            dialog.setFixedSize(500, 400)
+            
+            layout = QVBoxLayout(dialog)
+            
+            # Active tasks
+            active_label = QLabel("Active Tasks:")
+            active_label.setStyleSheet("font-weight: bold; color: #ffffff; margin-bottom: 8px;")
+            layout.addWidget(active_label)
+            
+            active_list = QListWidget()
+            active_tasks = self.background_ops.get_active_tasks()
+            
+            if active_tasks:
+                for task_id, task in active_tasks.items():
+                    item_text = f"{task.task_type} - {task.progress}% - {task.status}"
+                    active_list.addItem(item_text)
+            else:
+                active_list.addItem("No active tasks")
+                
+            layout.addWidget(active_list)
+            
+            # Pending tasks
+            pending_label = QLabel("Pending Tasks:")
+            pending_label.setStyleSheet("font-weight: bold; color: #ffffff; margin: 16px 0 8px 0;")
+            layout.addWidget(pending_label)
+            
+            pending_list = QListWidget()
+            pending_tasks = self.background_ops.get_pending_tasks()
+            
+            if pending_tasks:
+                for task in pending_tasks:
+                    item_text = f"{task.task_type} - Priority: {task.priority}"
+                    pending_list.addItem(item_text)
+            else:
+                pending_list.addItem("No pending tasks")
+                
+            layout.addWidget(pending_list)
+            
+            # Close button
+            buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+            buttons.rejected.connect(dialog.accept)
+            layout.addWidget(buttons)
+            
+            dialog.exec()
+        else:
+            QMessageBox.information(self, "Background Tasks", "Background operations not available")
+            
+    def show_system_status(self):
+        """Show system status dialog"""
+        if self.tray_manager:
+            self.tray_manager.show_system_status()
+        else:
+            QMessageBox.information(self, "System Status", "System monitoring not available")
+            
+    def show_tray_settings(self):
+        """Show tray settings dialog"""
+        if self.tray_manager:
+            self.tray_manager.show_tray_settings()
+        else:
+            QMessageBox.information(self, "Tray Settings", "System tray not available")
+            
+    def show_background_settings(self):
+        """Show background operations settings"""
+        if not self.background_ops:
+            QMessageBox.information(self, "Background Settings", "Background operations not available")
+            return
+            
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Background Operations Settings")
+        dialog.setModal(True)
+        dialog.setFixedSize(400, 350)
+        
+        layout = QVBoxLayout(dialog)
+        
+        # Get current settings
+        current_settings = self.background_ops.settings
+        
+        # Auto processing group
+        processing_group = QGroupBox("Automatic Processing")
+        processing_layout = QFormLayout(processing_group)
+        
+        auto_process_docs = QCheckBox()
+        auto_process_docs.setChecked(current_settings.get("auto_process_documents", True))
+        processing_layout.addRow("Auto-process documents:", auto_process_docs)
+        
+        # Monitoring group
+        monitoring_group = QGroupBox("System Monitoring")
+        monitoring_layout = QFormLayout(monitoring_group)
+        
+        health_monitoring = QCheckBox()
+        health_monitoring.setChecked(current_settings.get("health_monitoring", True))
+        monitoring_layout.addRow("Enable health monitoring:", health_monitoring)
+        
+        health_interval = QSpinBox()
+        health_interval.setRange(30, 300)
+        health_interval.setSuffix(" seconds")
+        health_interval.setValue(current_settings.get("health_check_interval", 60))
+        monitoring_layout.addRow("Check interval:", health_interval)
+        
+        # Task management group
+        tasks_group = QGroupBox("Task Management")
+        tasks_layout = QFormLayout(tasks_group)
+        
+        max_concurrent = QSpinBox()
+        max_concurrent.setRange(1, 10)
+        max_concurrent.setValue(current_settings.get("max_concurrent_tasks", 3))
+        tasks_layout.addRow("Max concurrent tasks:", max_concurrent)
+        
+        auto_session_sync = QCheckBox()
+        auto_session_sync.setChecked(current_settings.get("auto_session_sync", True))
+        tasks_layout.addRow("Auto session sync:", auto_session_sync)
+        
+        auto_cache_cleanup = QCheckBox()
+        auto_cache_cleanup.setChecked(current_settings.get("auto_cache_cleanup", True))
+        tasks_layout.addRow("Auto cache cleanup:", auto_cache_cleanup)
+        
+        # Buttons
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | 
+            QDialogButtonBox.StandardButton.Cancel
+        )
+        
+        def save_settings():
+            new_settings = {
+                "auto_process_documents": auto_process_docs.isChecked(),
+                "health_monitoring": health_monitoring.isChecked(),
+                "health_check_interval": health_interval.value(),
+                "max_concurrent_tasks": max_concurrent.value(),
+                "auto_session_sync": auto_session_sync.isChecked(),
+                "auto_cache_cleanup": auto_cache_cleanup.isChecked()
+            }
+            self.background_ops.update_settings(new_settings)
+            dialog.accept()
+            
+            self.show_tray_notification(
+                "Settings Updated",
+                "Background operations settings saved",
+                NotificationLevel.SUCCESS
+            )
+            
+        buttons.accepted.connect(save_settings)
+        buttons.rejected.connect(dialog.reject)
+        
+        # Layout assembly
+        layout.addWidget(processing_group)
+        layout.addWidget(monitoring_group)
+        layout.addWidget(tasks_group)
+        layout.addStretch()
+        layout.addWidget(buttons)
+        
+        dialog.exec()
+        
+    def load_styles(self):
+        """Load application styles"""
+        try:
+            style_file = Path(__file__).parent / "styles.qss"
+            if style_file.exists():
+                with open(style_file, 'r', encoding='utf-8') as f:
+                    self.setStyleSheet(f.read())
+        except Exception as e:
+            print(f"Failed to load styles: {e}")
+            
+    def restore_window_state(self):
+        """Restore window state from session"""
+        pass
+        
+    def check_backend_connection(self):
+        """Check backend connection status"""
+        # This will be implemented to show connection status
+        pass
 
 
-# UPDATE THE requirements-frontend.txt TO INCLUDE:
-# ADD THIS LINE: 
-# webbrowser (this is built-in, no need to add)
+# Phase 13 integration functions (moved outside class)
+def setup_phase13_integration():
+    """Setup Phase 13 system integration"""
+    # This function can be called to ensure Phase 13 is properly integrated
+    logger.info("Phase 13 system integration initialized")
+
+def cleanup_phase13_integration():
+    """Cleanup Phase 13 system integration"""
+    cleanup_background_operations()
+    cleanup_system_tray()
+    logger.info("Phase 13 system integration cleaned up")

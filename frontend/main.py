@@ -147,7 +147,9 @@ class RAGDesktopApp(QApplication):
         self.setOrganizationName("RAG Desktop")
         self.setOrganizationDomain("ragdesktop.local")
         
-        # High DPI support (PyQt6 handles this automatically)
+        # High DPI support - removed deprecated attributes for PyQt6 compatibility
+        # self.setAttribute(Qt.ApplicationAttribute.AA_EnableHighDpiScaling, True)
+        # self.setAttribute(Qt.ApplicationAttribute.AA_UseHighDpiPixmaps, True)
         
         # Set application icon (if available)
         self.setWindowIcon(self.style().standardIcon(self.style().StandardPixmap.SP_ComputerIcon))

@@ -14,7 +14,7 @@ class Settings(BaseSettings):
     # OAuth settings
     google_client_id: str = ""
     google_client_secret: str = ""
-    google_redirect_uri: str = "http://localhost:8080/auth/callback"
+    google_redirect_uri: str = "urn:ietf:wg:oauth:2.0:oob"
     
     # JWT settings
     jwt_secret_key: str = "20b65ba89001e24c49f1af548fc2bb456dcdb039"
@@ -53,8 +53,13 @@ class Settings(BaseSettings):
     web_search_enabled: bool = True
     fallback_threshold: float = 0.3 
     
+    # Additional frontend/CORS settings
+    jwt_expiration_hours: int = 24
+    frontend_url: str = "http://localhost:3000"
+    cors_origins: str = '["http://localhost:3000","http://localhost:8080"]'
+    
     class Config:
-        env_file = ".env"
+        env_file = "../.env"
         case_sensitive = False
 
 settings = Settings()

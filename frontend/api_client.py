@@ -1,26 +1,23 @@
 """
 API Client for RAG Desktop Application
-Handles all HTTP communication with the FastAPI backend
+Handles communication with the backend API
 """
 
-import httpx
-import json
-import logging
 import asyncio
-from typing import Optional, Dict, List, Any, AsyncGenerator
+import logging
+import httpx
+from typing import Dict, Any, List, Optional, AsyncGenerator
 from pathlib import Path
-import os
 
 logger = logging.getLogger(__name__)
 
 class APIClient:
-    """Async HTTP client for backend communication"""
+    """Async API client for backend communication"""
     
     def __init__(self, base_url: str = "http://localhost:8000"):
         self.base_url = base_url
-        self.timeout = httpx.Timeout(30.0, connect=5.0)
-        self.session: Optional[httpx.AsyncClient] = None
         self.auth_token: Optional[str] = None
+        self.client: Optional[httpx.AsyncClient] = None
         
     async def __aenter__(self):
         """Async context manager entry"""
@@ -32,230 +29,210 @@ class APIClient:
         await self.disconnect()
         
     async def connect(self):
-        """Initialize HTTP session"""
-        if self.session is None:
-            self.session = httpx.AsyncClient(
-                timeout=self.timeout,
-                follow_redirects=True
+        """Connect to the API"""
+        try:
+            self.client = httpx.AsyncClient(
+                base_url=self.base_url,
+                timeout=30.0,
+                headers={"User-Agent": "RAG-Desktop/1.0"}
             )
-        logger.info(f"Connected to API at {self.base_url}")
-        
+            logger.info(f"Connected to API at {self.base_url}")
+        except Exception as e:
+            logger.error(f"Failed to connect to API: {e}")
+            raise
+            
     async def disconnect(self):
-        """Close HTTP session"""
-        if self.session:
-            await self.session.aclose()
-            self.session = None
-        logger.info("Disconnected from API")
-        
+        """Disconnect from the API"""
+        if self.client:
+            await self.client.aclose()
+            logger.info("Disconnected from API")
+            
     def get_headers(self) -> Dict[str, str]:
-        """Get request headers with authentication"""
+        """Get request headers"""
         headers = {
             "Content-Type": "application/json",
-            "User-Agent": "RAG-Desktop/1.0"
+            "Accept": "application/json"
         }
         if self.auth_token:
             headers["Authorization"] = f"Bearer {self.auth_token}"
         return headers
         
     async def _make_request(self, method: str, endpoint: str, **kwargs) -> Dict[str, Any]:
-        """Make HTTP request with error handling"""
-        if not self.session:
-            await self.connect()
+        """Make HTTP request to API"""
+        if not self.client:
+            raise Exception("API client not connected")
             
         url = f"{self.base_url}{endpoint}"
-        headers = kwargs.pop("headers", {})
-        headers.update(self.get_headers())
+        headers = self.get_headers()
         
         try:
-            response = await self.session.request(
+            response = await self.client.request(
                 method=method,
                 url=url,
                 headers=headers,
                 **kwargs
             )
             response.raise_for_status()
-            
-            # Handle different content types
-            content_type = response.headers.get("content-type", "")
-            if "application/json" in content_type:
-                return response.json()
-            else:
-                return {"data": response.text}
-                
+            return response.json()
         except httpx.HTTPStatusError as e:
-            logger.error(f"HTTP {e.response.status_code}: {e.response.text}")
-            raise APIError(f"HTTP {e.response.status_code}: {e.response.text}")
-        except httpx.RequestError as e:
+            logger.error(f"HTTP error: {e.response.status_code} - {e.response.text}")
+            raise
+        except Exception as e:
             logger.error(f"Request failed: {e}")
-            raise APIError(f"Connection failed: {e}")
-        except Exception as e:
-            logger.error(f"Unexpected error: {e}")
-            raise APIError(f"Unexpected error: {e}")
-    
-    # Health and System Endpoints
+            raise
+            
     async def test_connection(self) -> bool:
-        """Test if backend is accessible"""
+        """Test API connection"""
         try:
-            result = await self._make_request("GET", "/api/v1/health")
-            return result.get("status") == "healthy"
-        except Exception as e:
-            logger.error(f"Connection test failed: {e}")
+            await self._make_request("GET", "/api/v1/health")
+            return True
+        except Exception:
             return False
             
     async def get_system_status(self) -> Dict[str, Any]:
-        """Get detailed system status"""
+        """Get system status"""
         return await self._make_request("GET", "/api/v1/health")
         
     async def get_available_models(self) -> List[str]:
-        """Get list of available LLM models"""
+        """Get available AI models"""
         try:
-            result = await self._make_request("GET", "/api/v1/llm/status")
-            return result.get("available_models", [])
+            response = await self._make_request("GET", "/api/v1/system/models")
+            return response.get("models", [])
         except Exception:
-            return ["gemma:2b"]  # Default fallback
-    
-    # Document Management Endpoints
-    async def upload_document(self, file_path: str, progress_callback=None) -> Dict[str, Any]:
-        """Upload a document to the backend"""
-        if not self.session:
-            await self.connect()
+            return []
             
-        file_path = Path(file_path)
-        if not file_path.exists():
-            raise APIError(f"File not found: {file_path}")
+    async def upload_document(self, file_path: str, progress_callback=None) -> Dict[str, Any]:
+        """Upload document to API"""
+        if not Path(file_path).exists():
+            raise FileNotFoundError(f"File not found: {file_path}")
             
         try:
-            with open(file_path, 'rb') as f:
-                files = {
-                    "file": (file_path.name, f, "application/octet-stream")
-                }
-                
-                # Remove content-type from headers for multipart
-                headers = {k: v for k, v in self.get_headers().items() 
-                          if k.lower() != "content-type"}
-                
-                response = await self.session.post(
+            with open(file_path, "rb") as f:
+                files = {"file": (Path(file_path).name, f, "application/octet-stream")}
+                response = await self.client.post(
                     f"{self.base_url}/api/v1/documents/upload",
                     files=files,
-                    headers=headers
+                    headers={"Authorization": f"Bearer {self.auth_token}"} if self.auth_token else {}
                 )
                 response.raise_for_status()
                 return response.json()
-                
         except Exception as e:
-            logger.error(f"Upload failed for {file_path}: {e}")
-            raise APIError(f"Upload failed: {e}")
+            logger.error(f"Upload failed: {e}")
+            raise
             
     async def get_documents(self, skip: int = 0, limit: int = 50) -> List[Dict[str, Any]]:
-        """Get paginated list of documents"""
-        params = {"skip": skip, "limit": limit}
-        result = await self._make_request("GET", "/api/v1/documents", params=params)
-        return result if isinstance(result, list) else result.get("documents", [])
-        
+        """Get list of documents"""
+        try:
+            response = await self._make_request("GET", f"/api/v1/documents?skip={skip}&limit={limit}")
+            return response.get("documents", [])
+        except Exception:
+            return []
+            
     async def get_document_details(self, doc_id: str) -> Dict[str, Any]:
-        """Get detailed information about a document"""
+        """Get document details"""
         return await self._make_request("GET", f"/api/v1/documents/{doc_id}")
         
     async def delete_document(self, doc_id: str) -> bool:
-        """Delete a document and its embeddings"""
+        """Delete document"""
         try:
             await self._make_request("DELETE", f"/api/v1/documents/{doc_id}")
             return True
-        except Exception as e:
-            logger.error(f"Failed to delete document {doc_id}: {e}")
+        except Exception:
             return False
             
     async def process_document(self, doc_id: str) -> Dict[str, Any]:
-        """Process document (chunking and embedding)"""
+        """Process document"""
         return await self._make_request("POST", f"/api/v1/documents/{doc_id}/process")
         
     async def get_document_chunks(self, doc_id: str) -> List[Dict[str, Any]]:
-        """Get chunks for a specific document"""
-        result = await self._make_request("GET", f"/api/v1/documents/{doc_id}/chunks")
-        return result if isinstance(result, list) else result.get("chunks", [])
-    
-    # RAG and Search Endpoints
-    async def rag_query(self, query: str, max_results: int = 5) -> str:
-        """Send RAG query with fallback"""
-        payload = {
-            "query": query,
-            "max_results": max_results,
-            "use_fallback": True
-        }
-        result = await self._make_request("POST", "/api/v1/rag/answer-with-fallback", json=payload)
-        return result.get("answer", "No response received")
-        
-    async def semantic_search(self, query: str, document_ids: Optional[List[str]] = None, limit: int = 10) -> List[Dict[str, Any]]:
-        """Perform semantic search across documents"""
-        payload = {
-            "query": query,
-            "limit": limit
-        }
-        if document_ids:
-            payload["document_ids"] = document_ids
+        """Get document chunks"""
+        try:
+            response = await self._make_request("GET", f"/api/v1/documents/{doc_id}/chunks")
+            return response.get("chunks", [])
+        except Exception:
+            return []
             
-        result = await self._make_request("POST", "/api/v1/search/semantic", json=payload)
-        return result if isinstance(result, list) else result.get("results", [])
-        
+    async def rag_query(self, query: str, max_results: int = 5) -> str:
+        """Perform RAG query"""
+        try:
+            response = await self._make_request(
+                "POST", 
+                "/api/v1/rag/answer-with-fallback",
+                json={"query": query, "max_results": max_results}
+            )
+            return response.get("answer", "No answer available")
+        except Exception as e:
+            logger.error(f"RAG query failed: {e}")
+            return f"Error: {e}"
+            
+    async def semantic_search(self, query: str, document_ids: Optional[List[str]] = None, limit: int = 10) -> List[Dict[str, Any]]:
+        """Perform semantic search"""
+        try:
+            payload = {"query": query, "limit": limit}
+            if document_ids:
+                payload["document_ids"] = document_ids
+            response = await self._make_request("POST", "/api/v1/search/semantic", json=payload)
+            return response.get("results", [])
+        except Exception:
+            return []
+            
     async def web_search(self, query: str, max_results: int = 5) -> List[Dict[str, Any]]:
-        """Perform web search using TAVILY"""
-        payload = {
-            "query": query,
-            "max_results": max_results
-        }
-        result = await self._make_request("POST", "/api/v1/search/web", json=payload)
-        return result if isinstance(result, list) else result.get("results", [])
-    
-    # Streaming Endpoints
+        """Perform web search"""
+        try:
+            response = await self._make_request(
+                "POST", 
+                "/api/v1/search/web",
+                json={"query": query, "max_results": max_results}
+            )
+            return response.get("results", [])
+        except Exception:
+            return []
+            
     async def stream_rag_query(self, query: str, max_results: int = 5) -> AsyncGenerator[str, None]:
         """Stream RAG query response"""
-        if not self.session:
-            await self.connect()
-            
-        payload = {
-            "query": query,
-            "max_results": max_results,
-            "use_fallback": True
-        }
-        
         try:
-            async with self.session.stream(
+            async with self.client.stream(
                 "POST",
                 f"{self.base_url}/api/v1/rag/stream",
-                json=payload,
+                json={"query": query, "max_results": max_results},
                 headers=self.get_headers()
             ) as response:
-                response.raise_for_status()
-                
-                async for chunk in response.aiter_text():
-                    if chunk.strip():
-                        yield chunk
-                        
+                async for line in response.aiter_lines():
+                    if line.startswith("data: "):
+                        data = line[6:]  # Remove "data: " prefix
+                        if data == "[DONE]":
+                            break
+                        yield data
         except Exception as e:
-            logger.error(f"Streaming query failed: {e}")
-            yield f"Error: {str(e)}"
-    
-    # Chat Management (Future Implementation)
+            logger.error(f"Stream RAG query failed: {e}")
+            yield f"Error: {e}"
+            
+    # Chat session management
     async def create_chat_session(self) -> str:
-        """Create a new chat session"""
-        result = await self._make_request("POST", "/api/v1/chat/new")
-        return result.get("session_id", "")
-        
-    async def get_chat_history(self, session_id: str, limit: int = 50) -> List[Dict[str, Any]]:
-        """Get chat history for a session"""
-        params = {"limit": limit}
-        result = await self._make_request("GET", f"/api/v1/chat/history/{session_id}", params=params)
-        return result if isinstance(result, list) else result.get("messages", [])
-        
-    async def delete_chat_session(self, session_id: str) -> bool:
-        """Delete a chat session"""
+        """Create new chat session"""
         try:
-            await self._make_request("DELETE", f"/api/v1/chat/{session_id}")
+            response = await self._make_request("POST", "/api/v1/chat/sessions")
+            return response.get("session_id", "")
+        except Exception:
+            return ""
+            
+    async def get_chat_history(self, session_id: str, limit: int = 50) -> List[Dict[str, Any]]:
+        """Get chat history"""
+        try:
+            response = await self._make_request("GET", f"/api/v1/chat/sessions/{session_id}/messages?limit={limit}")
+            return response.get("messages", [])
+        except Exception:
+            return []
+            
+    async def delete_chat_session(self, session_id: str) -> bool:
+        """Delete chat session"""
+        try:
+            await self._make_request("DELETE", f"/api/v1/chat/sessions/{session_id}")
             return True
         except Exception:
             return False
     
-    # Authentication (Future Implementation)
+    # Authentication methods
     def set_auth_token(self, token: str):
         """Set authentication token"""
         self.auth_token = token
@@ -266,16 +243,12 @@ class APIClient:
         self.auth_token = None
         logger.info("Authentication token cleared")
         
-    # Authentication API Methods (NEW)
     async def google_oauth_login(self) -> Dict[str, str]:
         """Initiate Google OAuth flow"""
         return await self._make_request("POST", "/api/v1/auth/google/login")
         
-    async def google_oauth_callback(self, code: str, state: Optional[str] = None) -> Dict[str, Any]:
+    async def google_oauth_callback(self, code: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         """Handle Google OAuth callback"""
-        payload = {"code": code}
-        if state:
-            payload["state"] = state
         return await self._make_request("POST", "/api/v1/auth/google/callback", json=payload)
         
     async def refresh_auth_token(self, refresh_token: str) -> Dict[str, Any]:
@@ -294,6 +267,10 @@ class APIClient:
     async def get_user_profile(self) -> Dict[str, Any]:
         """Get current user profile"""
         return await self._make_request("GET", "/api/v1/auth/profile")
+
+class APIError(Exception):
+    """Custom exception for API errors"""
+    pass
 
 # Synchronous wrapper for use in Qt threads
 class SyncAPIClient:
@@ -368,12 +345,20 @@ class SyncAPIClient:
                 return await client.semantic_search(query)
         return self._run_async(_search())
         
-    # Authentication methods (NEW)
-    def google_oauth_callback(self, code: str, state: Optional[str] = None) -> Dict[str, Any]:
+    # Authentication methods
+    def google_oauth_login(self) -> Dict[str, Any]:
+        """Sync version of google_oauth_login"""
+        async def _login():
+            async with APIClient(self.base_url) as client:
+                return await client.google_oauth_login()
+        return self._run_async(_login())
+        
+    def google_oauth_callback(self, code: str, is_mock: bool = False) -> Dict[str, Any]:
         """Sync version of google_oauth_callback"""
         async def _callback():
             async with APIClient(self.base_url) as client:
-                return await client.google_oauth_callback(code, state)
+                payload = {"code": code, "is_mock": is_mock}
+                return await client.google_oauth_callback(code, payload)
         return self._run_async(_callback())
         
     def refresh_auth_token(self, refresh_token: str) -> Dict[str, Any]:
@@ -400,64 +385,6 @@ class SyncAPIClient:
                     client.set_auth_token(self.auth_token)
                 return await client.logout()
         return self._run_async(_logout())
-
-class APIError(Exception):
-    """Custom exception for API errors"""
-    pass
-
-# Synchronous wrapper for use in Qt threads
-class SyncAPIClient:
-    """Synchronous wrapper for APIClient to use in Qt threads"""
-    
-    def __init__(self, base_url: str = "http://localhost:8000"):
-        self.base_url = base_url
-        
-    def _run_async(self, coro):
-        """Run async coroutine in new event loop"""
-        try:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            return loop.run_until_complete(coro)
-        finally:
-            try:
-                loop.close()
-            except:
-                pass
-    
-    def test_connection(self) -> bool:
-        """Sync version of test_connection"""
-        async def _test():
-            async with APIClient(self.base_url) as client:
-                return await client.test_connection()
-        return self._run_async(_test())
-        
-    def upload_document(self, file_path: str) -> Dict[str, Any]:
-        """Sync version of upload_document"""
-        async def _upload():
-            async with APIClient(self.base_url) as client:
-                return await client.upload_document(file_path)
-        return self._run_async(_upload())
-        
-    def get_documents(self) -> List[Dict[str, Any]]:
-        """Sync version of get_documents"""
-        async def _get_docs():
-            async with APIClient(self.base_url) as client:
-                return await client.get_documents()
-        return self._run_async(_get_docs())
-        
-    def rag_query(self, query: str) -> str:
-        """Sync version of rag_query"""
-        async def _query():
-            async with APIClient(self.base_url) as client:
-                return await client.rag_query(query)
-        return self._run_async(_query())
-        
-    def semantic_search(self, query: str) -> List[Dict[str, Any]]:
-        """Sync version of semantic_search"""
-        async def _search():
-            async with APIClient(self.base_url) as client:
-                return await client.semantic_search(query)
-        return self._run_async(_search())
 
 # Global API client instance
 api_client = SyncAPIClient()

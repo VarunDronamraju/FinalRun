@@ -230,11 +230,11 @@ class AuthenticationManager(QObject):
         self.api_client = api_client
         self.auth_state = AuthState()
         
-        # OAuth configuration (these should come from env or config)
+        # OAuth configuration - will be fetched from backend
         self.oauth_config = {
-            "client_id": "your-google-client-id.apps.googleusercontent.com",
-            "client_secret": "your-google-client-secret",  # Keep secure!
-            "redirect_uri": "urn:ietf:wg:oauth:2.0:oob",  # Out-of-band for desktop
+            "client_id": "mock_client_id",  # Will be updated from backend
+            "client_secret": "mock_client_secret",
+            "redirect_uri": "urn:ietf:wg:oauth:2.0:oob",
             "scope": "openid email profile",
             "auth_base_url": "https://accounts.google.com/o/oauth2/v2/auth",
             "token_url": "https://oauth2.googleapis.com/token"
@@ -262,23 +262,22 @@ class AuthenticationManager(QObject):
         return None
         
     def start_oauth_flow(self):
-        """Start Google OAuth authentication flow"""
+        """Start Google OAuth authentication flow using backend"""
         try:
-            # Generate state parameter for security
-            state = secrets.token_urlsafe(32)
+            # Use backend OAuth flow instead of direct Google OAuth
+            if not self.api_client:
+                self.auth_error.emit("API client not available")
+                return
+                
+            # Get OAuth URL from backend
+            oauth_response = self.api_client.google_oauth_login()
             
-            # Build authorization URL
-            auth_params = {
-                "client_id": self.oauth_config["client_id"],
-                "redirect_uri": self.oauth_config["redirect_uri"],
-                "scope": self.oauth_config["scope"],
-                "response_type": "code",
-                "state": state,
-                "access_type": "offline",  # Request refresh token
-                "prompt": "consent"        # Force consent screen
-            }
-            
-            auth_url = f"{self.oauth_config['auth_base_url']}?" + urllib.parse.urlencode(auth_params)
+            if not oauth_response or "auth_url" not in oauth_response:
+                self.auth_error.emit("Failed to get OAuth URL from backend")
+                return
+                
+            auth_url = oauth_response["auth_url"]
+            is_mock = oauth_response.get("is_mock", False)
             
             # Show OAuth dialog
             dialog = GoogleOAuthDialog(auth_url)
@@ -292,7 +291,8 @@ class AuthenticationManager(QObject):
                 )
                 
                 if ok and auth_code.strip():
-                    self.exchange_code_for_tokens(auth_code.strip())
+                    # Use backend to exchange code for tokens
+                    self.exchange_code_for_tokens(auth_code.strip(), is_mock)
                 else:
                     self.auth_error.emit("Authorization cancelled by user")
             else:
@@ -302,12 +302,24 @@ class AuthenticationManager(QObject):
             logger.error(f"OAuth flow failed: {e}")
             self.auth_error.emit(f"Authentication failed: {e}")
             
-    def exchange_code_for_tokens(self, auth_code: str):
-        """Exchange authorization code for access tokens"""
-        self.auth_worker = AuthWorkerThread("exchange_code", auth_code=auth_code)
-        self.auth_worker.auth_completed.connect(self.handle_token_response)
-        self.auth_worker.error_occurred.connect(self.auth_error.emit)
-        self.auth_worker.start()
+    def exchange_code_for_tokens(self, auth_code: str, is_mock: bool = False):
+        """Exchange authorization code for access tokens using backend"""
+        if not self.api_client:
+            self.auth_error.emit("API client not available")
+            return
+            
+        try:
+            # Use backend to exchange code for tokens
+            token_response = self.api_client.google_oauth_callback(auth_code, is_mock)
+            
+            if token_response and "access_token" in token_response:
+                self.handle_token_response(True, token_response)
+            else:
+                self.auth_error.emit("Failed to exchange authorization code")
+                
+        except Exception as e:
+            logger.error(f"Token exchange failed: {e}")
+            self.auth_error.emit(f"Token exchange failed: {e}")
         
     def handle_token_response(self, success: bool, result: Dict[str, Any]):
         """Handle token exchange response"""
@@ -327,18 +339,23 @@ class AuthenticationManager(QObject):
             self.auth_error.emit("Failed to exchange authorization code")
             
     def get_user_profile(self):
-        """Get user profile information"""
-        if not self.auth_state.access_token:
-            self.auth_error.emit("No access token available")
+        """Get user profile information from backend"""
+        if not self.api_client:
+            self.auth_error.emit("API client not available")
             return
             
-        self.profile_worker = AuthWorkerThread(
-            "get_user_info", 
-            access_token=self.auth_state.access_token
-        )
-        self.profile_worker.auth_completed.connect(self.handle_user_info)
-        self.profile_worker.error_occurred.connect(self.auth_error.emit)
-        self.profile_worker.start()
+        try:
+            # Get user profile from backend
+            user_info = self.api_client.get_user_profile()
+            
+            if user_info:
+                self.handle_user_info(True, user_info)
+            else:
+                self.auth_error.emit("Failed to get user profile")
+                
+        except Exception as e:
+            logger.error(f"Profile retrieval failed: {e}")
+            self.auth_error.emit(f"Profile retrieval failed: {e}")
         
     def handle_user_info(self, success: bool, user_info: Dict[str, Any]):
         """Handle user info response"""

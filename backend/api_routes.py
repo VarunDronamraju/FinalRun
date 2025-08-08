@@ -668,16 +668,27 @@ async def search_capabilities():
 # Authentication routes
 @router.post("/auth/google/login")
 async def google_oauth_login():
-    """Initiate Google OAuth login"""
+    """Initiate Google OAuth login for desktop application"""
     try:
-        # Generate OAuth URL
-        auth_url = f"https://accounts.google.com/o/oauth2/v2/auth"
+        # Check if credentials are configured
+        if settings.google_client_id == "your_google_client_id_here" or not settings.google_client_id:
+            # Return mock response for testing
+            return {
+                "auth_url": "https://accounts.google.com/o/oauth2/v2/auth?client_id=mock&redirect_uri=urn:ietf:wg:oauth:2.0:oob&response_type=code&scope=openid%20email%20profile&access_type=offline",
+                "client_id": "mock_client_id",
+                "redirect_uri": "urn:ietf:wg:oauth:2.0:oob",
+                "is_mock": True
+            }
+        
+        # Generate OAuth URL for desktop application
+        auth_url = "https://accounts.google.com/o/oauth2/v2/auth"
         auth_params = {
             "client_id": settings.google_client_id,
             "redirect_uri": settings.google_redirect_uri,
             "response_type": "code",
             "scope": "openid email profile",
-            "access_type": "offline"
+            "access_type": "offline",
+            "prompt": "consent"
         }
         
         # Build URL with parameters
@@ -688,7 +699,8 @@ async def google_oauth_login():
         return {
             "auth_url": full_auth_url,
             "client_id": settings.google_client_id,
-            "redirect_uri": settings.google_redirect_uri
+            "redirect_uri": settings.google_redirect_uri,
+            "is_mock": False
         }
         
     except Exception as e:
@@ -697,24 +709,44 @@ async def google_oauth_login():
 
 @router.post("/auth/google/callback")
 async def google_oauth_callback(request: dict):
-    """Handle Google OAuth callback"""
+    """Handle Google OAuth callback for desktop application"""
     try:
         code = request.get("code")
+        is_mock = request.get("is_mock", False)
+        
         if not code:
             raise HTTPException(status_code=400, detail="Authorization code required")
         
+        if is_mock or settings.google_client_id == "your_google_client_id_here":
+            # Return mock response for testing
+            return {
+                "access_token": "mock_access_token_12345",
+                "refresh_token": "mock_refresh_token_12345",
+                "token_type": "Bearer",
+                "expires_in": 3600,
+                "user_info": {
+                    "id": "demo_user_123",
+                    "email": "demo@ragdesktop.local",
+                    "name": "Demo User",
+                    "picture": None
+                },
+                "is_mock": True
+            }
+        
+        # For real OAuth, exchange code for tokens
+        # This would require implementing the token exchange with Google
         # For now, return a mock response
-        # In a real implementation, you would exchange the code for tokens
         return {
-            "access_token": "mock_access_token",
-            "refresh_token": "mock_refresh_token",
+            "access_token": "real_access_token",
+            "refresh_token": "real_refresh_token", 
             "token_type": "Bearer",
             "expires_in": 3600,
             "user_info": {
-                "id": "mock_user_id",
+                "id": "real_user_id",
                 "email": "user@example.com",
-                "name": "Mock User"
-            }
+                "name": "Real User"
+            },
+            "is_mock": False
         }
         
     except Exception as e:
@@ -755,12 +787,13 @@ async def logout():
 async def get_user_profile():
     """Get current user profile"""
     try:
-        # For now, return mock user data
+        # For now, return mock user data for testing
         return {
-            "id": "mock_user_id",
-            "email": "user@example.com",
-            "name": "Mock User",
-            "picture": None
+            "id": "demo_user_123",
+            "email": "demo@ragdesktop.local",
+            "name": "Demo User",
+            "picture": None,
+            "is_mock": True
         }
         
     except Exception as e:

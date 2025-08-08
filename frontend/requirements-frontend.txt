@@ -8,6 +8,9 @@ PyQt6-Qt6==6.7.0
 # HTTP Client for API Communication
 httpx==0.27.0
 
+# System Monitoring (Phase 13)
+psutil==5.9.8
+
 # Additional utilities
 pathlib2==2.3.7.post1; python_version < "3.4"
 
@@ -29,6 +32,6 @@ pathlib2==2.3.7.post1; python_version < "3.4"
 # - signal (built-in)
 # - tempfile (built-in)
 # - hashlib (built-in)
-
-
+# - time (built-in)
+# - secrets (built-in for Python 3.6+)
 PyQt6-WebEngine==6.7.0 
