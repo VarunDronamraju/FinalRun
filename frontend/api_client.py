@@ -265,6 +265,141 @@ class APIClient:
         """Clear authentication token"""
         self.auth_token = None
         logger.info("Authentication token cleared")
+        
+    # Authentication API Methods (NEW)
+    async def google_oauth_login(self) -> Dict[str, str]:
+        """Initiate Google OAuth flow"""
+        return await self._make_request("POST", "/api/v1/auth/google/login")
+        
+    async def google_oauth_callback(self, code: str, state: Optional[str] = None) -> Dict[str, Any]:
+        """Handle Google OAuth callback"""
+        payload = {"code": code}
+        if state:
+            payload["state"] = state
+        return await self._make_request("POST", "/api/v1/auth/google/callback", json=payload)
+        
+    async def refresh_auth_token(self, refresh_token: str) -> Dict[str, Any]:
+        """Refresh authentication token"""
+        payload = {"refresh_token": refresh_token}
+        return await self._make_request("POST", "/api/v1/auth/refresh", json=payload)
+        
+    async def logout(self) -> bool:
+        """Logout and invalidate session"""
+        try:
+            await self._make_request("POST", "/api/v1/auth/logout")
+            return True
+        except Exception:
+            return False
+            
+    async def get_user_profile(self) -> Dict[str, Any]:
+        """Get current user profile"""
+        return await self._make_request("GET", "/api/v1/auth/profile")
+
+# Synchronous wrapper for use in Qt threads
+class SyncAPIClient:
+    """Synchronous wrapper for APIClient to use in Qt threads"""
+    
+    def __init__(self, base_url: str = "http://localhost:8000"):
+        self.base_url = base_url
+        self.auth_token: Optional[str] = None
+        
+    def _run_async(self, coro):
+        """Run async coroutine in new event loop"""
+        try:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            return loop.run_until_complete(coro)
+        finally:
+            try:
+                loop.close()
+            except:
+                pass
+    
+    def set_auth_token(self, token: str):
+        """Set authentication token"""
+        self.auth_token = token
+        
+    def clear_auth_token(self):
+        """Clear authentication token"""
+        self.auth_token = None
+    
+    def test_connection(self) -> bool:
+        """Sync version of test_connection"""
+        async def _test():
+            async with APIClient(self.base_url) as client:
+                if self.auth_token:
+                    client.set_auth_token(self.auth_token)
+                return await client.test_connection()
+        return self._run_async(_test())
+        
+    def upload_document(self, file_path: str) -> Dict[str, Any]:
+        """Sync version of upload_document"""
+        async def _upload():
+            async with APIClient(self.base_url) as client:
+                if self.auth_token:
+                    client.set_auth_token(self.auth_token)
+                return await client.upload_document(file_path)
+        return self._run_async(_upload())
+        
+    def get_documents(self) -> List[Dict[str, Any]]:
+        """Sync version of get_documents"""
+        async def _get_docs():
+            async with APIClient(self.base_url) as client:
+                if self.auth_token:
+                    client.set_auth_token(self.auth_token)
+                return await client.get_documents()
+        return self._run_async(_get_docs())
+        
+    def rag_query(self, query: str) -> str:
+        """Sync version of rag_query"""
+        async def _query():
+            async with APIClient(self.base_url) as client:
+                if self.auth_token:
+                    client.set_auth_token(self.auth_token)
+                return await client.rag_query(query)
+        return self._run_async(_query())
+        
+    def semantic_search(self, query: str) -> List[Dict[str, Any]]:
+        """Sync version of semantic_search"""
+        async def _search():
+            async with APIClient(self.base_url) as client:
+                if self.auth_token:
+                    client.set_auth_token(self.auth_token)
+                return await client.semantic_search(query)
+        return self._run_async(_search())
+        
+    # Authentication methods (NEW)
+    def google_oauth_callback(self, code: str, state: Optional[str] = None) -> Dict[str, Any]:
+        """Sync version of google_oauth_callback"""
+        async def _callback():
+            async with APIClient(self.base_url) as client:
+                return await client.google_oauth_callback(code, state)
+        return self._run_async(_callback())
+        
+    def refresh_auth_token(self, refresh_token: str) -> Dict[str, Any]:
+        """Sync version of refresh_auth_token"""
+        async def _refresh():
+            async with APIClient(self.base_url) as client:
+                return await client.refresh_auth_token(refresh_token)
+        return self._run_async(_refresh())
+        
+    def get_user_profile(self) -> Dict[str, Any]:
+        """Sync version of get_user_profile"""
+        async def _profile():
+            async with APIClient(self.base_url) as client:
+                if self.auth_token:
+                    client.set_auth_token(self.auth_token)
+                return await client.get_user_profile()
+        return self._run_async(_profile())
+        
+    def logout_user(self) -> bool:
+        """Sync version of logout"""
+        async def _logout():
+            async with APIClient(self.base_url) as client:
+                if self.auth_token:
+                    client.set_auth_token(self.auth_token)
+                return await client.logout()
+        return self._run_async(_logout())
 
 class APIError(Exception):
     """Custom exception for API errors"""

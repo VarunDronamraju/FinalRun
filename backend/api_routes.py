@@ -24,8 +24,24 @@ from web_search import web_search
 from sqlalchemy.orm import Session
 from database import get_db, init_database, DBDocument, DBChunk
 from documents import save_document_to_db, save_chunks_to_db, update_document_status
-
-
+from fastapi import APIRouter, HTTPException, Depends, status
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from pydantic import BaseModel
+import jwt
+import httpx
+import logging
+from datetime import datetime, timedelta
+from typing import Optional, Dict, Any
+import os
+from urllib.parse import urlencode
+import secrets
+from fastapi.security import OAuth2PasswordBearer
+from fastapi.responses import RedirectResponse
+from fastapi.exceptions import HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.middleware.gzip import GZipMiddleware
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -648,3 +664,105 @@ async def search_capabilities():
         "fallback_enabled": web_available,
         "tavily_configured": bool(tavily_key)
     }
+
+# Authentication routes
+@router.post("/auth/google/login")
+async def google_oauth_login():
+    """Initiate Google OAuth login"""
+    try:
+        # Generate OAuth URL
+        auth_url = f"https://accounts.google.com/o/oauth2/v2/auth"
+        auth_params = {
+            "client_id": settings.google_client_id,
+            "redirect_uri": settings.google_redirect_uri,
+            "response_type": "code",
+            "scope": "openid email profile",
+            "access_type": "offline"
+        }
+        
+        # Build URL with parameters
+        import urllib.parse
+        params = urllib.parse.urlencode(auth_params)
+        full_auth_url = f"{auth_url}?{params}"
+        
+        return {
+            "auth_url": full_auth_url,
+            "client_id": settings.google_client_id,
+            "redirect_uri": settings.google_redirect_uri
+        }
+        
+    except Exception as e:
+        logger.error(f"Google OAuth login error: {e}")
+        raise HTTPException(status_code=500, detail="OAuth login failed")
+
+@router.post("/auth/google/callback")
+async def google_oauth_callback(request: dict):
+    """Handle Google OAuth callback"""
+    try:
+        code = request.get("code")
+        if not code:
+            raise HTTPException(status_code=400, detail="Authorization code required")
+        
+        # For now, return a mock response
+        # In a real implementation, you would exchange the code for tokens
+        return {
+            "access_token": "mock_access_token",
+            "refresh_token": "mock_refresh_token",
+            "token_type": "Bearer",
+            "expires_in": 3600,
+            "user_info": {
+                "id": "mock_user_id",
+                "email": "user@example.com",
+                "name": "Mock User"
+            }
+        }
+        
+    except Exception as e:
+        logger.error(f"Google OAuth callback error: {e}")
+        raise HTTPException(status_code=500, detail="OAuth callback failed")
+
+@router.post("/auth/refresh")
+async def refresh_token(request: dict):
+    """Refresh access token"""
+    try:
+        refresh_token = request.get("refresh_token")
+        if not refresh_token:
+            raise HTTPException(status_code=400, detail="Refresh token required")
+        
+        # For now, return a mock response
+        return {
+            "access_token": "mock_new_access_token",
+            "token_type": "Bearer",
+            "expires_in": 3600
+        }
+        
+    except Exception as e:
+        logger.error(f"Token refresh error: {e}")
+        raise HTTPException(status_code=500, detail="Token refresh failed")
+
+@router.post("/auth/logout")
+async def logout():
+    """Logout user"""
+    try:
+        # In a real implementation, you would invalidate tokens
+        return {"message": "Logged out successfully"}
+        
+    except Exception as e:
+        logger.error(f"Logout error: {e}")
+        raise HTTPException(status_code=500, detail="Logout failed")
+
+@router.get("/auth/profile")
+async def get_user_profile():
+    """Get current user profile"""
+    try:
+        # For now, return mock user data
+        return {
+            "id": "mock_user_id",
+            "email": "user@example.com",
+            "name": "Mock User",
+            "picture": None
+        }
+        
+    except Exception as e:
+        logger.error(f"Profile error: {e}")
+        raise HTTPException(status_code=500, detail="Profile retrieval failed")

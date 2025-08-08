@@ -48,7 +48,6 @@ def create_app() -> FastAPI:
     
     # Include routes
     app.include_router(router, prefix="/api/v1")
-    
     # Global exception handler
     @app.exception_handler(Exception)
     async def global_exception_handler(request: Request, exc: Exception):

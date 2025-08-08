@@ -30,6 +30,9 @@ from PyQt6.QtGui import (
 
 from api_client import SyncAPIClient, APIError
 from session_manager import SessionManager
+from PyQt6.QtWidgets import QStackedWidget
+from auth_manager import AuthenticationManager
+from login_widget import AuthenticationWidget, UserProfileWidget
 
 logger = logging.getLogger(__name__)
 
@@ -1101,3 +1104,322 @@ class MainWindow(QMainWindow):
         """Check backend connection status"""
         # This will be implemented to show connection status
         pass
+
+
+
+# ADD THESE IMPORTS TO THE TOP OF main_window.py
+
+
+
+# ADD THIS NEW CLASS TO main_window.py (INSERT AFTER MessageBubble CLASS)
+
+class UserMenuWidget(QWidget):
+    """User menu widget for the top bar"""
+    
+    logout_requested = pyqtSignal()
+    profile_requested = pyqtSignal()
+    
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.user_info = {}
+        self.setup_ui()
+        
+    def setup_ui(self):
+        """Setup user menu UI"""
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(8, 4, 8, 4)
+        layout.setSpacing(8)
+        
+        # User avatar/name button
+        self.user_button = QPushButton("👤 Guest")
+        self.user_button.setProperty("class", "secondary")
+        self.user_button.setFixedHeight(32)
+        self.user_button.clicked.connect(self.profile_requested.emit)
+        
+        # Dropdown menu (will be implemented as context menu)
+        self.user_button.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.user_button.customContextMenuRequested.connect(self.show_user_menu)
+        
+        layout.addWidget(self.user_button)
+        
+    def update_user_info(self, user_info: dict):
+        """Update user information"""
+        self.user_info = user_info
+        
+        if user_info:
+            name = user_info.get("name", "User")
+            is_demo = user_info.get("demo_mode", False)
+            
+            if is_demo:
+                self.user_button.setText(f"🎯 {name}")
+                self.user_button.setToolTip("Demo Mode - Full features available")
+            else:
+                first_name = name.split()[0] if name else "User"
+                self.user_button.setText(f"👤 {first_name}")
+                self.user_button.setToolTip(f"Authenticated as {user_info.get('email', 'unknown')}")
+        else:
+            self.user_button.setText("👤 Guest")
+            self.user_button.setToolTip("Not authenticated")
+            
+    def show_user_menu(self, position):
+        """Show user context menu"""
+        from PyQt6.QtWidgets import QMenu
+        
+        menu = QMenu(self)
+        menu.setStyleSheet("""
+            QMenu {
+                background: rgba(31, 41, 55, 0.95);
+                border: 1px solid rgba(255, 255, 255, 0.2);
+                border-radius: 8px;
+                color: #e5e5e5;
+                padding: 8px;
+            }
+            QMenu::item {
+                background: transparent;
+                padding: 8px 16px;
+                border-radius: 4px;
+            }
+            QMenu::item:selected {
+                background: rgba(59, 130, 246, 0.2);
+            }
+        """)
+        
+        if self.user_info:
+            # User info header
+            user_email = self.user_info.get("email", "unknown")
+            info_action = menu.addAction(f"📧 {user_email}")
+            info_action.setEnabled(False)
+            
+            menu.addSeparator()
+            
+            # Profile action
+            profile_action = menu.addAction("👤 Profile")
+            profile_action.triggered.connect(self.profile_requested.emit)
+            
+            menu.addSeparator()
+            
+            # Logout action
+            logout_action = menu.addAction("🚪 Logout")
+            logout_action.triggered.connect(self.logout_requested.emit)
+        else:
+            login_action = menu.addAction("🔑 Login")
+            login_action.triggered.connect(self.profile_requested.emit)
+            
+        menu.exec(self.user_button.mapToGlobal(position))
+
+
+
+    def __init__(self):
+        super().__init__()
+        self.api_client = SyncAPIClient()
+        self.session_manager = SessionManager()
+        
+        # ADD THESE LINES:
+        self.auth_manager = AuthenticationManager(self.session_manager, self.api_client)
+        self.is_authenticated = False
+        self.current_user = {}
+        
+        self.setup_ui()
+        self.setup_menu_bar()
+        self.setup_status_bar()
+        self.setup_system_tray()
+        self.load_styles()
+        self.restore_window_state()
+        
+        # ADD THIS LINE:
+        self.setup_authentication()
+        
+        self.check_backend_connection()
+
+    # ADD THIS NEW METHOD TO MainWindow CLASS:
+    def setup_authentication(self):
+        """Setup authentication system"""
+        # Connect auth manager signals
+        self.auth_manager.auth_state_changed.connect(self.on_auth_state_changed)
+        self.auth_manager.user_info_updated.connect(self.on_user_info_updated)
+        self.auth_manager.auth_error.connect(self.on_auth_error)
+        
+        # Check if already authenticated
+        if self.auth_manager.is_authenticated():
+            user_info = self.auth_manager.get_user_info()
+            if user_info:
+                self.on_user_info_updated(user_info)
+                self.on_auth_state_changed(True)
+                
+    # MODIFY THE setup_ui METHOD IN MainWindow CLASS:
+    # REPLACE THE EXISTING setup_ui METHOD WITH THIS:
+    def setup_ui(self):
+        """Setup main window UI"""
+        self.setWindowTitle("RAG Desktop - AI Document Assistant")
+        self.setMinimumSize(1000, 700)
+        self.resize(1200, 800)
+        
+        # Central widget
+        central_widget = QWidget()
+        self.setCentralWidget(central_widget)
+        
+        # Main layout
+        layout = QVBoxLayout(central_widget)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        
+        # Top bar with connection status and user menu
+        top_bar = QFrame()
+        top_bar.setFixedHeight(50)
+        top_bar.setStyleSheet("""
+            QFrame {
+                background: rgba(255, 255, 255, 0.05);
+                border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+            }
+        """)
+        
+        top_bar_layout = QHBoxLayout(top_bar)
+        top_bar_layout.setContentsMargins(16, 8, 16, 8)
+        
+        # Connection status
+        self.connection_label = QLabel("🔄 Checking connection...")
+        self.connection_label.setStyleSheet("padding: 4px 12px; background: rgba(255, 193, 7, 0.1); color: #ffc107; border-radius: 4px; font-size: 12px;")
+        
+        # User menu
+        self.user_menu = UserMenuWidget()
+        self.user_menu.logout_requested.connect(self.logout_user)
+        self.user_menu.profile_requested.connect(self.show_auth_dialog)
+        
+        top_bar_layout.addWidget(self.connection_label)
+        top_bar_layout.addStretch()
+        top_bar_layout.addWidget(self.user_menu)
+        
+        # Main content area
+        self.content_stack = QStackedWidget()
+        
+        # Authentication widget (shown when not authenticated)
+        self.auth_widget = AuthenticationWidget(self.auth_manager)
+        self.auth_widget.authentication_changed.connect(self.on_authentication_changed)
+        
+        # Main app widget (shown when authenticated)
+        self.main_app_widget = QWidget()
+        self.setup_main_app_widget()
+        
+        # Add both to stack
+        self.content_stack.addWidget(self.auth_widget)      # Index 0
+        self.content_stack.addWidget(self.main_app_widget)  # Index 1
+        
+        # Initially show auth widget
+        self.content_stack.setCurrentIndex(0)
+        
+        layout.addWidget(top_bar)
+        layout.addWidget(self.content_stack)
+        
+    # ADD THIS NEW METHOD TO MainWindow CLASS:
+    def setup_main_app_widget(self):
+        """Setup the main application widget (tabs)"""
+        layout = QVBoxLayout(self.main_app_widget)
+        layout.setContentsMargins(0, 0, 0, 0)
+        
+        # Tab widget
+        self.tab_widget = QTabWidget()
+        
+        # Chat tab
+        self.chat_widget = ChatWidget(self.api_client, self.session_manager)
+        self.tab_widget.addTab(self.chat_widget, "💬 Chat")
+        
+        # Documents tab
+        self.document_widget = DocumentWidget(self.api_client, self.session_manager)
+        self.tab_widget.addTab(self.document_widget, "📄 Documents")
+        
+        # Settings tab
+        self.settings_widget = SettingsWidget(self.session_manager)
+        self.tab_widget.addTab(self.settings_widget, "⚙️ Settings")
+        
+        layout.addWidget(self.tab_widget)
+        
+    # ADD THESE NEW METHODS TO MainWindow CLASS:
+    def on_authentication_changed(self, authenticated: bool, user_info: dict):
+        """Handle authentication state change"""
+        self.is_authenticated = authenticated
+        self.current_user = user_info
+        
+        if authenticated:
+            # Switch to main app
+            self.content_stack.setCurrentIndex(1)
+            self.user_menu.update_user_info(user_info)
+            
+            # Update window title
+            user_name = user_info.get("name", "User")
+            self.setWindowTitle(f"RAG Desktop - {user_name}")
+            
+            logger.info(f"User authenticated: {user_info.get('email', 'demo')}")
+        else:
+            # Switch to auth widget
+            self.content_stack.setCurrentIndex(0)
+            self.user_menu.update_user_info({})
+            self.setWindowTitle("RAG Desktop - AI Document Assistant")
+            
+    def on_auth_state_changed(self, authenticated: bool):
+        """Handle auth manager state change"""
+        if not authenticated and self.is_authenticated:
+            # User logged out
+            self.on_authentication_changed(False, {})
+            
+    def on_user_info_updated(self, user_info: dict):
+        """Handle user info update"""
+        self.current_user = user_info
+        self.user_menu.update_user_info(user_info)
+        
+    def on_auth_error(self, error_message: str):
+        """Handle authentication error"""
+        QMessageBox.warning(self, "Authentication Error", error_message)
+        
+    def logout_user(self):
+        """Logout current user"""
+        reply = QMessageBox.question(
+            self,
+            "Logout",
+            "Are you sure you want to logout?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+        
+        if reply == QMessageBox.StandardButton.Yes:
+            self.auth_manager.logout()
+            
+    def show_auth_dialog(self):
+        """Show authentication dialog"""
+        if self.is_authenticated:
+            # Show user profile
+            self.show_user_profile()
+        else:
+            # Already showing auth widget, just ensure it's visible
+            self.content_stack.setCurrentIndex(0)
+            
+    def show_user_profile(self):
+        """Show user profile dialog"""
+        from PyQt6.QtWidgets import QDialog, QVBoxLayout, QDialogButtonBox
+        
+        dialog = QDialog(self)
+        dialog.setWindowTitle("User Profile")
+        dialog.setModal(True)
+        dialog.setFixedSize(400, 300)
+        
+        layout = QVBoxLayout(dialog)
+        
+        # User profile widget
+        profile_widget = UserProfileWidget()
+        profile_widget.update_user_info(self.current_user)
+        profile_widget.logout_requested.connect(dialog.accept)
+        profile_widget.logout_requested.connect(self.logout_user)
+        
+        # Close button
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        buttons.rejected.connect(dialog.accept)
+        
+        layout.addWidget(profile_widget)
+        layout.addWidget(buttons)
+        
+        dialog.exec()
+
+# ALSO ADD THIS IMPORT TO THE TOP OF main_window.py:
+
+
+# UPDATE THE requirements-frontend.txt TO INCLUDE:
+# ADD THIS LINE: 
+# webbrowser (this is built-in, no need to add)
